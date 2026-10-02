@@ -61,6 +61,10 @@ impl BeastApp {
 
 impl eframe::App for BeastApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(target_os = "android")]
+        for event in ctx.input(|i| i.events.clone()) {
+            log::debug!("egui 事件: {event:?}");
+        }
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::CollapsingHeader::new("兽音字典（默认 嗷呜啊~，4 个互不重复的字符）")
                 .default_open(false)
@@ -136,12 +140,21 @@ pub fn start(app: eframe::NativeOptions) -> Result<(), eframe::Error> {
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub fn android_main(app: winit::platform::android::activity::AndroidApp) {
-    use winit::platform::android::EventLoopBuilderExtAndroid;
+    android_logger::init_once(
+        android_logger::Config::default()
+            .with_max_level(log::LevelFilter::Trace)
+            .with_tag("beast-app"),
+    );
+    let _ = std::panic::set_hook(Box::new(|info| log::error!("panic: {info}")));
+    log::info!("android_main 进入");
     let mut options = eframe::NativeOptions::default();
-    options.event_loop_builder = Some(Box::new(move |builder| {
-        builder.with_android_app(app.clone());
-    }));
-    let _ = start(options);
+    // eframe 0.31 要求把 AndroidApp 放在这里，它自己调 with_android_app；
+    // 只挂 event_loop_builder 会被它忽略，报 "missing required android_app"
+    options.android_app = Some(app);
+    match start(options) {
+        Ok(()) => log::info!("事件循环返回"),
+        Err(e) => log::error!("eframe 失败: {e:?}"),
+    }
 }
 
 #[cfg(test)]
