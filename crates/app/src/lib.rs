@@ -5,10 +5,11 @@ pub struct BeastApp {
     human: String,
     /// 兽音文本框
     beast_text: String,
+    /// 勾选 = 完整串（头尾按当前字典的 4+2+1 / 3）；不勾 = 裸正文
+    mainstream: bool,
     /// 字典编辑区（应用成功后才写进 dict）
     dict_input: String,
     dict: beast::BeastDict,
-    status: String,
 }
 
 impl Default for BeastApp {
@@ -16,9 +17,9 @@ impl Default for BeastApp {
         Self {
             human: String::new(),
             beast_text: String::new(),
+            mainstream: true,
             dict_input: beast::BEAST.iter().collect(),
             dict: beast::BeastDict::DEFAULT,
-            status: String::new(),
         }
     }
 }
@@ -31,34 +32,29 @@ impl BeastApp {
 
     /// 人话 → 兽音：结果覆盖兽音文本框
     fn translate_to_beast(&mut self) {
-        self.beast_text = self.dict.encode(&self.human);
-        self.status = format!("已写入兽音框，{} 字", self.beast_text.chars().count());
+        self.beast_text = if self.mainstream {
+            self.dict.encode(&self.human)
+        } else {
+            self.dict.encode_body(&self.human)
+        };
     }
 
-    /// 兽音 → 人话：结果覆盖人话文本框；失败不动人话框
+    /// 兽音 → 人话：成功才覆盖人话文本框，失败不动
     fn translate_to_human(&mut self) {
-        match self.dict.decode(&self.beast_text) {
-            Ok(text) => {
-                self.status = format!("已写入人话框，{} 字", text.chars().count());
-                self.human = text;
-            }
-            Err(e) => {
-                self.status = format!("失败：{e}");
-            }
+        let result = if self.mainstream {
+            self.dict.decode(&self.beast_text)
+        } else {
+            self.dict.decode_body(&self.beast_text)
+        };
+        if let Ok(text) = result {
+            self.human = text;
         }
     }
 
-    /// 应用字典编辑区的内容；成功后编辑区规范化为当前字典
     fn apply_dict(&mut self) {
-        match beast::BeastDict::parse(&self.dict_input) {
-            Ok(dict) => {
-                self.dict = dict;
-                self.dict_input = dict.chars().iter().collect();
-                self.status = format!("字典已生效：{:?}，头尾={:?}", dict.chars(), self.dict.head());
-            }
-            Err(e) => {
-                self.status = format!("字典无效：{e}");
-            }
+        if let Ok(dict) = beast::BeastDict::parse(&self.dict_input) {
+            self.dict = dict;
+            self.dict_input = dict.chars().iter().collect();
         }
     }
 }
@@ -84,8 +80,9 @@ impl eframe::App for BeastApp {
                         }
                     });
                 });
+            ui.checkbox(&mut self.mainstream, "主流兼容");
             ui.label("文本框");
-            let box_height = (ui.available_height() - 40.0) * 0.5;
+            let box_height = (ui.available_height() - 60.0) * 0.5;
             ui.add(
                 egui::TextEdit::multiline(&mut self.human)
                     .desired_width(f32::INFINITY)
@@ -99,13 +96,12 @@ impl eframe::App for BeastApp {
                     self.translate_to_human();
                 }
                 ui.label("兽音文本框");
-                let width = ui.available_width();
                 ui.add(
                     egui::TextEdit::multiline(&mut self.beast_text)
-                        .min_size(egui::vec2(width, box_height)),
+                        .desired_width(f32::INFINITY)
+                        .min_size(egui::vec2(0.0, box_height)),
                 );
             });
-            ui.label(&self.status);
         });
     }
 }
@@ -153,58 +149,57 @@ mod tests {
     use super::*;
 
     #[test]
-    fn to_beast_overwrites_beast_box() {
+    fn mainstream_on_wraps_with_affix_from_active_dict() {
         let mut app = BeastApp { human: "你好".into(), ..Default::default() };
         app.translate_to_beast();
         assert_eq!(app.beast_text, beast::encode("你好"));
-    }
-
-    #[test]
-    fn to_human_overwrites_human_box_on_round_trip() {
-        let mut app = BeastApp { human: "a\tb😀".into(), ..Default::default() };
-        app.translate_to_beast();
         app.human.clear();
         app.translate_to_human();
-        assert_eq!(app.human, "a\tb😀");
-        assert!(app.status.starts_with("已写入人话框"));
+        assert_eq!(app.human, "你好");
     }
 
     #[test]
-    fn to_human_failure_keeps_human_box() {
+    fn mainstream_off_uses_bare_body() {
+        let mut app = BeastApp {
+            human: "你好".into(),
+            mainstream: false,
+            ..Default::default()
+        };
+        app.translate_to_beast();
+        assert_eq!(app.beast_text, beast::encode_body("你好"));
+        assert!(!app.beast_text.starts_with(beast::AFFIX_HEAD));
+        app.human.clear();
+        app.translate_to_human();
+        assert_eq!(app.human, "你好");
+    }
+
+    #[test]
+    fn failed_keeps_human_box_untouched() {
         let mut app = BeastApp {
             human: "别覆盖我".into(),
-            beast_text: "呜嗷嗷".into(), // 缺头尾
+            beast_text: "呜嗷嗷".into(), // 缺头尾，主流模式下解不动
             ..Default::default()
         };
         app.translate_to_human();
         assert_eq!(app.human, "别覆盖我");
-        assert!(app.status.contains("失败"));
     }
 
     #[test]
     fn custom_dict_end_to_end() {
         let mut app = BeastApp { dict_input: "一二三四".into(), ..Default::default() };
         app.apply_dict();
-        assert!(app.status.starts_with("字典已生效"));
         app.human = "你好".into();
         app.translate_to_beast();
-        assert!(app.beast_text.starts_with("四二一"));
-        assert!(app.beast_text.ends_with('三'));
+        assert!(app.beast_text.starts_with("四二一") && app.beast_text.ends_with('三'));
         app.human.clear();
         app.translate_to_human();
         assert_eq!(app.human, "你好");
-        // 默认字典解不了自定义字典的串
-        app.dict_input = "嗷呜啊~".into();
-        app.apply_dict();
-        app.translate_to_human();
-        assert!(app.status.contains("失败"));
     }
 
     #[test]
-    fn invalid_dict_rejected_and_active_dict_untouched() {
+    fn invalid_dict_leaves_active_dict_untouched() {
         let mut app = BeastApp { dict_input: "aaaa".into(), ..Default::default() };
         app.apply_dict();
-        assert!(app.status.contains("字典无效"));
         assert_eq!(app.dict, beast::BeastDict::DEFAULT);
     }
 }
