@@ -1,0 +1,10 @@
+[package]
+name = "beast-core"
+version = "1.0.0"
+edition = "2021"
+description = "兽音译者（兽语翻译）编解码内核，复制自 beast_sdk/Rust（算法零改动）"
+license = "MIT"
+
+[lib]
+name = "beast"
+path = "src/lib.rs"
