@@ -34,31 +34,138 @@ pub const AFFIX_HEAD: &str = "~呜嗷";
 /// 主流兽音译者附在正文后的尾，即字典序号 `3`（见 [`AFFIX_HEAD`]）
 pub const AFFIX_TAIL: &str = "啊";
 
-fn beast_index(ch: char) -> Option<usize> {
-    BEAST.iter().position(|&b| b == ch)
+/// 一套可替换的兽语字典（4 个互不重复的字符，1 基序号 1..4）。
+///
+/// 主流格式的头尾**不是固定字符串，而是字典的 1 基序号**：头 = `4 + 2 + 1`、尾 = `3`。
+/// 换字典后头尾必须跟着换，这正是它兼容不同兽音的机制——默认字典下
+/// [`BeastDict::head`] == [`AFFIX_HEAD`]、[`BeastDict::tail`] == [`AFFIX_TAIL`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BeastDict {
+    chars: [char; 4],
+}
+
+/// 字典不合法：长度不是 4，或 4 个元素有重复
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DictError {
+    WrongLength { char_count: usize },
+    DuplicateChar(char),
+}
+
+impl std::fmt::Display for DictError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DictError::WrongLength { char_count } => {
+                write!(f, "字典需要恰好 4 个字符，收到 {char_count} 个")
+            }
+            DictError::DuplicateChar(ch) => write!(f, "字典字符 {ch:?} 重复，4 个必须互不相同"),
+        }
+    }
+}
+
+impl std::error::Error for DictError {}
+
+impl BeastDict {
+    /// 默认字典 = 主流兽音译者的 `嗷呜啊~`
+    pub const DEFAULT: Self = Self { chars: BEAST };
+
+    pub fn new(chars: [char; 4]) -> Result<Self, DictError> {
+        for (i, a) in chars.iter().enumerate() {
+            if let Some(&b) = chars[i + 1..].iter().find(|&&b| b == *a) {
+                return Err(DictError::DuplicateChar(b));
+            }
+        }
+        Ok(Self { chars })
+    }
+
+    /// 从恰好 4 个字符的字符串建字典（按 `chars()` 计数，任何 Unicode 字符都可以）
+    pub fn parse(s: &str) -> Result<Self, DictError> {
+        let chars: Vec<char> = s.chars().collect();
+        let chars: [char; 4] = chars.try_into().map_err(|v: Vec<char>| DictError::WrongLength {
+            char_count: v.len(),
+        })?;
+        Self::new(chars)
+    }
+
+    pub fn chars(&self) -> [char; 4] {
+        self.chars
+    }
+
+    fn index(&self, ch: char) -> Option<usize> {
+        self.chars.iter().position(|&b| b == ch)
+    }
+
+    /// 主流头 = 字典 1 基序号 `4 + 2 + 1`
+    pub fn head(&self) -> String {
+        [self.chars[3], self.chars[1], self.chars[0]].into_iter().collect()
+    }
+
+    /// 主流尾 = 字典 1 基序号 `3`
+    pub fn tail(&self) -> char {
+        self.chars[2]
+    }
+
+    pub fn encode(&self, text: &str) -> String {
+        let mut out = String::with_capacity(6 + text.len() * 8);
+        out.push_str(&self.head());
+        out.push_str(&self.encode_body(text));
+        out.push(self.tail());
+        out
+    }
+
+    pub fn encode_body(&self, text: &str) -> String {
+        let mut out = String::with_capacity(text.len() * 8);
+        for (index, unit) in text.encode_utf16().enumerate() {
+            for (offset, digit) in hex4(unit).into_iter().enumerate() {
+                let k = (digit + (index * 4 + offset) % 16) % 16;
+                out.push(self.chars[k / DICT_BASE]);
+                out.push(self.chars[k % DICT_BASE]);
+            }
+        }
+        out
+    }
+
+    /// 完整串 → 人话；头尾必须是**本字典**算出的，缺任一即 [`DecodeError::MissingAffix`]
+    pub fn decode(&self, beast_text: &str) -> Result<String, DecodeError> {
+        let core = beast_text
+            .strip_prefix(&self.head())
+            .and_then(|body| body.strip_suffix(self.tail()))
+            .ok_or(DecodeError::MissingAffix)?;
+        self.decode_body(core)
+    }
+
+    pub fn decode_body(&self, beast_text: &str) -> Result<String, DecodeError> {
+        let chars: Vec<char> = beast_text.chars().collect();
+        if !chars.len().is_multiple_of(2) {
+            return Err(DecodeError::OddLength {
+                char_count: chars.len(),
+            });
+        }
+        let mut nibbles = Vec::with_capacity(chars.len() / 2);
+        for (n, pair) in chars.chunks(2).enumerate() {
+            let high = self.index(pair[0]).ok_or(DecodeError::UnknownChar(pair[0]))?;
+            let low = self.index(pair[1]).ok_or(DecodeError::UnknownChar(pair[1]))?;
+            let k = (high * DICT_BASE + low) as isize - (n % 16) as isize;
+            nibbles.push(rem(k, 16) as u16);
+        }
+        let mut units = Vec::with_capacity(nibbles.len() / 4);
+        for chunk in nibbles.chunks(4) {
+            if chunk.len() < 4 {
+                break;
+            }
+            units.push(chunk.iter().fold(0u16, |acc, &digit| acc * 16 + digit));
+        }
+        Ok(String::from_utf16_lossy(&units))
+    }
 }
 
 /// 人话 → 主流兽音译者的完整串：[`AFFIX_HEAD`] + 正文 + [`AFFIX_TAIL`]
 pub fn encode(text: &str) -> String {
-    let mut out = String::with_capacity(AFFIX_HEAD.len() + text.len() * 8 + AFFIX_TAIL.len());
-    out.push_str(AFFIX_HEAD);
-    out.push_str(&encode_body(text));
-    out.push_str(AFFIX_TAIL);
-    out
+    BeastDict::DEFAULT.encode(text)
 }
 
 /// 人话 → 兽语正文（不带 [`AFFIX_HEAD`] / [`AFFIX_TAIL`]，与 `JavaScript/beast.js` 同码）
 pub fn encode_body(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() * 8);
-    // `encode_utf16` 给出的就是 JS `split("")` 的码元序列，代理对在这里拆成两个码元
-    for (index, unit) in text.encode_utf16().enumerate() {
-        for (offset, digit) in hex4(unit).into_iter().enumerate() {
-            let k = (digit + (index * 4 + offset) % 16) % 16;
-            out.push(BEAST[k / DICT_BASE]);
-            out.push(BEAST[k % DICT_BASE]);
-        }
-    }
-    out
+    BeastDict::DEFAULT.encode_body(text)
 }
 
 /// 主流完整串 → 人话，要求 [`AFFIX_HEAD`] 与 [`AFFIX_TAIL`] **都在**，缺任一即
@@ -68,41 +175,12 @@ pub fn encode_body(text: &str) -> String {
 /// 例如 `퀃`（U+D003）的正文是 `~呜嗷呜嗷啊呜啊`。按长度 4 剥掉会把整条位流挪动 2 位，
 /// 后面每个码元都解错。
 pub fn decode(beast_text: &str) -> Result<String, DecodeError> {
-    let core = beast_text
-        .strip_prefix(AFFIX_HEAD)
-        .and_then(|body| body.strip_suffix(AFFIX_TAIL))
-        .ok_or(DecodeError::MissingAffix)?;
-    decode_body(core)
+    BeastDict::DEFAULT.decode(beast_text)
 }
 
 /// 兽语正文 → 人话。只吃裸正文；带 [`AFFIX_HEAD`] / [`AFFIX_TAIL`] 的主流完整串交给 [`decode`]。
 pub fn decode_body(beast_text: &str) -> Result<String, DecodeError> {
-    let chars: Vec<char> = beast_text.chars().collect();
-    if !chars.len().is_multiple_of(2) {
-        return Err(DecodeError::OddLength {
-            char_count: chars.len(),
-        });
-    }
-
-    // 还原十六进制位流。滚动序号按**位流位置**计（JS: encode 用 `i % 0x10`、
-    // decode 用 `parseInt(i / 2) % 0x10`），与已输出的字符串长度无关。
-    let mut nibbles = Vec::with_capacity(chars.len() / 2);
-    for (n, pair) in chars.chunks(2).enumerate() {
-        let high = beast_index(pair[0]).ok_or(DecodeError::UnknownChar(pair[0]))?;
-        let low = beast_index(pair[1]).ok_or(DecodeError::UnknownChar(pair[1]))?;
-        let k = (high * DICT_BASE + low) as isize - (n % 16) as isize;
-        nibbles.push(rem(k, 16) as u16);
-    }
-
-    // 每 4 位合成一个 UTF-16 码元；不足 4 位的尾巴照 JS 的 `while (end <= length)` 丢弃
-    let mut units = Vec::with_capacity(nibbles.len() / 4);
-    for chunk in nibbles.chunks(4) {
-        if chunk.len() < 4 {
-            break;
-        }
-        units.push(chunk.iter().fold(0u16, |acc, &digit| acc * 16 + digit));
-    }
-    Ok(String::from_utf16_lossy(&units))
+    BeastDict::DEFAULT.decode_body(beast_text)
 }
 
 /// 一个码元的 4 个十六进制位，高位在前（等价于 `unit.toString(16)` 左补零到 4 位）
@@ -140,7 +218,7 @@ impl std::fmt::Display for DecodeError {
             DecodeError::OddLength { char_count } => {
                 write!(f, "兽语长度为 {char_count}，不是 2 的整数倍")
             }
-            DecodeError::UnknownChar(ch) => write!(f, "字符 {ch:?} 不在兽语字典 {BEAST:?} 中"),
+            DecodeError::UnknownChar(ch) => write!(f, "字符 {ch:?} 不在兽语字典中"),
             DecodeError::MissingAffix => write!(
                 f,
                 "缺少主流附加头尾 {AFFIX_HEAD:?}…{AFFIX_TAIL:?}；裸正文请交给 decode_body"
@@ -303,5 +381,47 @@ mod tests {
         );
         core.pop(); // 7 个十六进制位 → 只够 1 个码元
         assert_eq!(decode_body(&core.iter().collect::<String>()).unwrap(), "你");
+    }
+
+    /// 自定义字典：头尾按 1 基序号 4+2+1 / 3 随字典一起换
+    #[test]
+    fn custom_dict_affix_follows_dictionary() {
+        let dict = BeastDict::parse("αβγδ").unwrap();
+        assert_eq!(dict.head(), "δβα"); // 第4=δ 第2=β 第1=α
+        assert_eq!(dict.tail(), 'γ'); // 第3
+        let full = dict.encode("你好😀");
+        assert!(full.starts_with("δβα") && full.ends_with('γ'));
+        assert_eq!(dict.decode(&full).unwrap(), "你好😀");
+    }
+
+    /// 默认字典的 BeastDict 方法与旧自由函数逐字符一致（增量不破坏既有语义）
+    #[test]
+    fn default_dict_methods_agree_with_free_functions() {
+        for text in ["", "你好", "a\tb\u{1F600}", "甲乙丙丁一二三四"] {
+            assert_eq!(BeastDict::DEFAULT.encode(text), encode(text));
+            assert_eq!(BeastDict::DEFAULT.encode_body(text), encode_body(text));
+            assert_eq!(
+                BeastDict::DEFAULT.decode(&encode(text)).unwrap(),
+                decode(&encode(text)).unwrap()
+            );
+        }
+        assert_eq!(BeastDict::DEFAULT.head(), AFFIX_HEAD);
+        assert_eq!(BeastDict::DEFAULT.tail().to_string(), AFFIX_TAIL);
+    }
+
+    /// 不同字典的完整串互不通用：拿默认字典解自定义字典的串必须响亮报缺头尾
+    #[test]
+    fn cross_dict_decode_rejected() {
+        let dict = BeastDict::parse("一二三四").unwrap();
+        let full = dict.encode("你好");
+        assert_eq!(decode(&full).unwrap_err(), DecodeError::MissingAffix);
+    }
+
+    #[test]
+    fn dict_validation() {
+        assert_eq!(BeastDict::parse("aaa"), Err(DictError::WrongLength { char_count: 3 }));
+        assert_eq!(BeastDict::parse("嗷呜啊~x").unwrap_err(), DictError::WrongLength { char_count: 5 });
+        assert_eq!(BeastDict::parse("嗷呜啊嗷"), Err(DictError::DuplicateChar('嗷')));
+        assert!(BeastDict::parse("呜啊~嗷").is_ok()); // 换序合法，头尾随之变
     }
 }
