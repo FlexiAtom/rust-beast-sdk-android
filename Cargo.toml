@@ -1,3 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["crates/beast-core"]
+members = ["crates/beast-core", "crates/app"]
+
+[profile.release]
+strip = true
+opt-level = "s"

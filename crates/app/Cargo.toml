@@ -1,0 +1,17 @@
+[package]
+name = "beast-app"
+version = "0.1.0"
+edition = "2021"
+description = "兽音译者安卓 app（纯 Rust，eframe/egui）"
+license = "MIT"
+
+[lib]
+name = "beast_app"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+beast-core = { path = "../beast-core" }
+eframe = "0.31"
+
+[target.'cfg(target_os = "android")'.dependencies]
+winit = { version = "0.30", features = ["android-native-activity"] }
