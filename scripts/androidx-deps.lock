@@ -1,0 +1,22 @@
+# dex 依赖锁定清单：每行 <sha256><TAB><下载 URL>。
+# 由 scripts/build_dex.sh 逐条校验；改版本=改这一行，改完必须重新核对发布方的校验和
+# （androidx 用 <URL>.sha256，kotlin 用 Maven Central 的 .sha1 换算）后再提交。
+bd4f19a5f00effed0eecad0a310b1f2169b9fc66236a3ba743a222eb77747ee1	https://dl.google.com/dl/android/maven2/androidx/activity/activity/1.13.0/activity-1.13.0.aar
+55445ad0ff025963929892569a0bfc6b4c68e60d8b7c965dcffba09048c36c8e	https://dl.google.com/dl/android/maven2/androidx/core/core/1.19.0/core-1.19.0.aar
+dc1b678d58ebcf2bfa1587be68ff826694ce3d221251b9ef30d4d4b36297e6de	https://dl.google.com/dl/android/maven2/androidx/core/core-viewtree/1.0.0/core-viewtree-1.0.0.aar
+1e343917ebf27ba96fe4dc52b1cad7fd32b738fbc6355bb6cd5b3b305d7212d0	https://dl.google.com/dl/android/maven2/androidx/annotation/annotation-jvm/1.9.1/annotation-jvm-1.9.1.jar
+6bd4c7c7476f8260cd3bdbb81183583e93fc9f790c27dea7dc314181cbf87aa0	https://dl.google.com/dl/android/maven2/androidx/annotation/annotation-experimental/1.4.1/annotation-experimental-1.4.1.aar
+984ce9bd780055eafb8a105aca3f514686bf7b1b6272ec7c645a98ce40fc7db4	https://dl.google.com/dl/android/maven2/androidx/collection/collection-jvm/1.4.2/collection-jvm-1.4.2.jar
+f34831b6c71cd844e1d35d1be49d5e79447c5ab856346531b1e8676fda7374b1	https://dl.google.com/dl/android/maven2/androidx/lifecycle/lifecycle-common/2.6.2/lifecycle-common-2.6.2.jar
+4867fd5279742fba8388821930cb2affe06d81a52814e7e41e70392ea0ef887c	https://dl.google.com/dl/android/maven2/androidx/lifecycle/lifecycle-runtime/2.6.2/lifecycle-runtime-2.6.2.aar
+e4ff4338999e1c6c9c724719f5d4aa7dd61bf6f545d5256a27a9d375df9f2330	https://dl.google.com/dl/android/maven2/androidx/lifecycle/lifecycle-viewmodel/2.6.2/lifecycle-viewmodel-2.6.2.aar
+7bc7dcbab17636ec076f12afe4d02671265c389457b1b366b37a0e8cb91e2da0	https://dl.google.com/dl/android/maven2/androidx/lifecycle/lifecycle-viewmodel-savedstate/2.6.2/lifecycle-viewmodel-savedstate-2.6.2.aar
+2256780a3cff4a1e57fbb3d442557c17dc363ab8af105bcaf5261d8e2d5db949	https://dl.google.com/dl/android/maven2/androidx/lifecycle/lifecycle-livedata-core/2.6.2/lifecycle-livedata-core-2.6.2.aar
+65308a06b1c00ee186cb9e19321383f043b993813f1522c47f4a3e3303bdba41	https://dl.google.com/dl/android/maven2/androidx/arch/core/core-common/2.2.0/core-common-2.2.0.jar
+a1be5e0caa2b07623862af6ae21b3ab0718123245184d0e30dea81b53f990a47	https://dl.google.com/dl/android/maven2/androidx/arch/core/core-runtime/2.2.0/core-runtime-2.2.0.aar
+21a7d4bcf6bdb94ad7b9283801529300b4fbb8808ca4f191e0cdce6fd8e4705a	https://dl.google.com/dl/android/maven2/androidx/savedstate/savedstate/1.2.1/savedstate-1.2.1.aar
+6faa90390d1fdbf0adb9a99bf99de67b94c6c6f35aea9510593a9d17973736a2	https://dl.google.com/dl/android/maven2/androidx/tracing/tracing/1.2.0/tracing-1.2.0.aar
+57e8d93260d18d5b9007c9eed3c64ad159de90c8609ebfc74a347cbd514535a4	https://dl.google.com/dl/android/maven2/androidx/versionedparcelable/versionedparcelable/1.1.1/versionedparcelable-1.1.1.aar
+33193135a64fe21fa2c35eec6688f1a76e512606c0fc83dc1b689e37add7732a	https://dl.google.com/dl/android/maven2/androidx/interpolator/interpolator/1.0.0/interpolator-1.0.0.aar
+cda4bb83d1c892a208732e99c2d59e4f247ab5c23a1d2524fc004db2e4e9a780	https://dl.google.com/dl/android/maven2/androidx/navigationevent/navigationevent-android/1.0.0/navigationevent-android-1.0.0.aar
+1bcc74e8ce84e2c25eaafde10f1248349cce3062b6e36978cbeec610db1e930a	https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-stdlib/2.1.20/kotlin-stdlib-2.1.20.jar
