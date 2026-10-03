@@ -231,5 +231,18 @@ fn mainstream_observed_samples() {
             input,
             "decode 主流实测串失败: input={input:?}"
         );
+        // 同一条串也要能被"从串里提字典"的那条路解开，提出来的正是默认字典。
+        // 这条路不能只在 Rust 自己编出来的串上成立——那等于只验证了逆命题。
+        let (text, dict, dropped) = beast::decode_mainstream(&observed).unwrap();
+        assert_eq!(
+            text, input,
+            "decode_mainstream 主流实测串失败: input={input:?}"
+        );
+        assert_eq!(
+            dict,
+            beast::BeastDict::DEFAULT,
+            "实测串提出来应当是默认字典"
+        );
+        assert_eq!(dropped, 0, "实测串不该有残缺尾部: {observed:?}");
     }
 }

@@ -19,7 +19,8 @@ use eframe::egui;
 pub struct BeastApp {
     /// 唯一的文本框：人话和兽音在这里互相覆盖
     text: String,
-    /// 勾选 = 完整串（头尾按当前字典的 4+2+1 / 3）；不勾 = 裸正文
+    /// 勾选 = 完整串：编码时按当前字典加头尾，解码时**从串自己的头尾提字典**并回填字典框；
+    /// 不勾 = 裸正文，两个方向都用字典框里那套
     mainstream: bool,
     /// 字典输入框，翻译时现取，不合法就报错
     dict_input: String,
@@ -57,15 +58,22 @@ impl BeastApp {
 
     /// 兽音 → 人话：解得动才覆盖文本框。
     ///
+    /// 勾了主流兼容时，字典**从串自己的头尾里提取**（头 = 4+2+1、尾 = 3，四个位置正好覆盖整套
+    /// 字典一次），并把提出来的那套回填进字典框——否则下一步反向翻译会用错字典。字典框里的值在这
+    /// 条路上只是被更新，不是前提条件。
+    ///
     /// 末尾凑不满一个字的残缺字符按主流行为静默丢弃，但这里给出一条提示，避免用户以为解全了。
     fn translate_to_human(&mut self) -> Result<(), String> {
-        let dict = Self::active_dict(&self.dict_input)?;
         let (decoded, dropped) = if self.mainstream {
-            dict.decode_with_tail(&self.text)
+            let (text, dict, dropped) =
+                beast::decode_mainstream(&self.text).map_err(|e| e.to_string())?;
+            self.dict_input = dict.chars().into_iter().collect();
+            (text, dropped)
         } else {
+            let dict = Self::active_dict(&self.dict_input)?;
             dict.decode_body_with_tail(&self.text)
-        }
-        .map_err(|e| e.to_string())?;
+                .map_err(|e| e.to_string())?
+        };
         self.text = decoded;
         if dropped > 0 {
             self.notice = Some(format!(
@@ -311,13 +319,42 @@ mod tests {
 
     #[test]
     fn dict_is_taken_at_translate_time() {
-        // 默认字典编出来的串，换字典后应当解不动 —— 证明没有"应用"这一步的缓存
+        // 裸正文不带字典，所以字典框改了就解不动——证明没有"应用"这一步的缓存
         let mut app = BeastApp {
             text: "你好".into(),
+            mainstream: false,
             ..Default::default()
         };
         app.translate_to_beast().unwrap();
         app.dict_input = "一二三四".into();
         assert!(app.translate_to_human().is_err());
+    }
+
+    /// 勾了主流兼容时，字典是从串里提出来的，字典框填错也照样解得开
+    #[test]
+    fn mainstream_decode_reads_the_dictionary_out_of_the_string() {
+        let dict = beast::BeastDict::new(['龙', '蛇', '龟', '鱼']).unwrap();
+        let mut app = BeastApp {
+            text: dict.encode("你好"),
+            dict_input: "嗷呜啊~".into(), // 故意留一套不相干的字典
+            ..Default::default()
+        };
+        app.translate_to_human().unwrap();
+        assert_eq!(app.text, "你好");
+        assert_eq!(app.dict_input, "龙蛇龟鱼", "应当把串自带的字典回填进框");
+    }
+
+    /// 主流串自带字典 ⇒ 反向翻译用的是同一套，来回一次得到原串
+    #[test]
+    fn mainstream_round_trip_survives_a_foreign_string() {
+        let incoming = beast::BeastDict::parse("αβγδ").unwrap().encode("兽音");
+        let mut app = BeastApp {
+            text: incoming.clone(),
+            ..Default::default()
+        };
+        app.translate_to_human().unwrap();
+        assert_eq!(app.text, "兽音");
+        app.translate_to_beast().unwrap();
+        assert_eq!(app.text, incoming, "解出来再编回去应当逐字符相同");
     }
 }

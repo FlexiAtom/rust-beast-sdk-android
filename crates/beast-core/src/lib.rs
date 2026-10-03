@@ -131,6 +131,30 @@ impl BeastDict {
         self.chars[2]
     }
 
+    /// 读出一条主流串**自带**的字典，并返回剥掉头尾后的裸正文。
+    ///
+    /// 主流头是字典 1 基序号 `4 + 2 + 1`、尾是 `3`，四个位置各出现一次，所以头尾四个字符
+    /// 恰好把整套字典确定下来：`chars = [头[2], 头[1], 尾, 头[0]]`。这意味着解主流串**不需要
+    /// 事先知道字典**——[`decode_with_tail`](Self::decode_with_tail) 那种"拿本地字典的头尾去
+    /// 匹配"只兼容字典恰好相同的情况，不是真兼容。
+    pub fn split_mainstream(beast_text: &str) -> Result<(Self, &str), MainstreamError> {
+        let mut chars = beast_text.chars();
+        let (Some(d4), Some(d2), Some(d1)) = (chars.next(), chars.next(), chars.next()) else {
+            return Err(MainstreamError::TooShort {
+                char_count: beast_text.chars().count(),
+            });
+        };
+        let Some(d3) = chars.next_back() else {
+            return Err(MainstreamError::TooShort { char_count: 3 });
+        };
+        let dict = Self::new([d1, d2, d3, d4]).map_err(MainstreamError::BadDict)?;
+        let head_len = d4.len_utf8() + d2.len_utf8() + d1.len_utf8();
+        Ok((
+            dict,
+            &beast_text[head_len..beast_text.len() - d3.len_utf8()],
+        ))
+    }
+
     pub fn encode(&self, text: &str) -> String {
         let mut out = String::with_capacity(6 + text.len() * 8);
         out.push_str(&self.head());
@@ -151,7 +175,10 @@ impl BeastDict {
         out
     }
 
-    /// 完整串 → 人话；头尾必须是**本字典**算出的，缺任一即 [`DecodeError::MissingAffix`]
+    /// 完整串 → 人话；头尾必须是**本字典**算出的，缺任一即 [`DecodeError::MissingAffix`]。
+    ///
+    /// 事先不知道字典时别用它——用 [`split_mainstream`](Self::split_mainstream) /
+    /// [`decode_mainstream`]，它们从串自己的头尾里读字典。
     pub fn decode(&self, beast_text: &str) -> Result<String, DecodeError> {
         Ok(self.decode_with_tail(beast_text)?.0)
     }
@@ -227,6 +254,46 @@ pub fn decode_body(beast_text: &str) -> Result<String, DecodeError> {
     BeastDict::DEFAULT.decode_body(beast_text)
 }
 
+/// 主流完整串 → 人话，**字典从串自己的头尾里提取**，不接受外部预设字典。
+///
+/// 返回 `(文本, 这条串实际用的字典, 尾部被丢弃的字符数)`。任何一套 4 字符字典编出来的主流串都解得开，
+/// 包括 [`BeastDict::DEFAULT`] 之外的——那才是"兼容主流"该有的意思。
+pub fn decode_mainstream(beast_text: &str) -> Result<(String, BeastDict, usize), MainstreamError> {
+    let (dict, body) = BeastDict::split_mainstream(beast_text)?;
+    let (text, dropped) = dict
+        .decode_body_with_tail(body)
+        .map_err(MainstreamError::Body)?;
+    Ok((text, dict, dropped))
+}
+
+/// [`decode_mainstream`] / [`BeastDict::split_mainstream`] 的错误
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MainstreamError {
+    /// 不足 4 个字符，连 3 位头 + 1 位尾都凑不出来
+    TooShort { char_count: usize },
+    /// 头尾四个字符有重复 ⇒ 提不出合法字典，即这不像一条主流串
+    BadDict(DictError),
+    /// 字典提出来了，但裸正文解不动
+    Body(DecodeError),
+}
+
+impl std::fmt::Display for MainstreamError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MainstreamError::TooShort { char_count } => write!(
+                f,
+                "主流串至少要 4 个字符（头 3 + 尾 1），收到 {char_count} 个"
+            ),
+            MainstreamError::BadDict(e) => {
+                write!(f, "从头尾提不出字典：{e}（说明它不是一条主流串）")
+            }
+            MainstreamError::Body(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for MainstreamError {}
+
 /// 一个码元的 4 个十六进制位，高位在前（等价于 `unit.toString(16)` 左补零到 4 位）
 fn hex4(unit: u16) -> [usize; 4] {
     [
@@ -252,7 +319,7 @@ pub enum DecodeError {
     OddLength { char_count: usize },
     /// 出现了不在字典中的字符
     UnknownChar(char),
-    /// 缺少 [`AFFIX_HEAD`] + [`AFFIX_TAIL`]，不是主流完整串
+    /// 头尾与**本字典**算出的 [`BeastDict::head`] / [`BeastDict::tail`] 不一致，不是本字典的主流完整串
     MissingAffix,
 }
 
@@ -265,7 +332,8 @@ impl std::fmt::Display for DecodeError {
             DecodeError::UnknownChar(ch) => write!(f, "字符 {ch:?} 不在兽语字典中"),
             DecodeError::MissingAffix => write!(
                 f,
-                "缺少主流附加头尾 {AFFIX_HEAD:?}…{AFFIX_TAIL:?}；裸正文请交给 decode_body"
+                "头尾缺失或与当前字典不符（头应为该字典的 4+2+1 三字符、尾应为 3 号字符）；\
+                 裸正文请交给 decode_body，不确定字典的主流串请交给 decode_mainstream"
             ),
         }
     }
@@ -471,6 +539,68 @@ mod tests {
         let full = dict.encode("你好😀");
         assert!(full.starts_with("δβα") && full.ends_with('γ'));
         assert_eq!(dict.decode(&full).unwrap(), "你好😀");
+    }
+
+    /// 主流串自带字典：任何一套字典编出来的串，都在**不预设字典**的情况下解得回。
+    /// 这才是"兼容主流"的意思——旧通路拿本地字典的头尾去匹配，跨字典直接拒。
+    #[test]
+    fn mainstream_string_carries_its_own_dictionary() {
+        for source in ["", "你好", "a\tb\u{1F600}", "甲乙丙丁"] {
+            for raw in ["αβγδ", "一二三四", "嗷呜啊~", "🐉🐍🐢🐟"] {
+                let dict = BeastDict::parse(raw).unwrap();
+                let (text, recovered, dropped) = decode_mainstream(&dict.encode(source)).unwrap();
+                assert_eq!(text, source, "{raw:?} 往返");
+                assert_eq!(recovered, dict, "提出来的字典应当就是编码时那套");
+                assert_eq!(dropped, 0, "{raw:?}");
+            }
+        }
+    }
+
+    /// 旧严格通路语义未放宽：本地字典不匹配的主流串照样解不动
+    #[test]
+    fn strict_decode_still_rejects_foreign_dictionary() {
+        let foreign = BeastDict::parse("αβγδ").unwrap().encode("你好");
+        assert_eq!(
+            BeastDict::DEFAULT.decode(&foreign).unwrap_err(),
+            DecodeError::MissingAffix
+        );
+    }
+
+    #[test]
+    fn decode_mainstream_names_why_it_failed() {
+        assert_eq!(
+            decode_mainstream("").unwrap_err(),
+            MainstreamError::TooShort { char_count: 0 }
+        );
+        assert_eq!(
+            decode_mainstream("呜嗷啊").unwrap_err(),
+            MainstreamError::TooShort { char_count: 3 }
+        );
+        // 头尾四个字符有重复 ⇒ 提不出字典
+        assert_eq!(
+            decode_mainstream("啊啊啊啊").unwrap_err(),
+            MainstreamError::BadDict(DictError::DuplicateChar('啊'))
+        );
+        // 字典提得出来（默认那套），但正文含字典外字符
+        assert_eq!(
+            decode_mainstream("~呜嗷喵呜啊").unwrap_err(),
+            MainstreamError::Body(DecodeError::UnknownChar('喵'))
+        );
+    }
+
+    /// 尾部残缺计数在自带字典通路上同样有效（残缺只可能出在正文，头尾按位置取）
+    #[test]
+    fn decode_mainstream_reports_dropped_tail() {
+        let dict = BeastDict::parse("一二三四").unwrap();
+        let body: Vec<char> = dict.encode_body("你好").chars().collect();
+        let mut cut: Vec<char> = dict.head().chars().collect();
+        cut.extend(&body[..body.len() - 2]); // 留 14 个正文字符 = 7 个码元位，凑不满 4 个
+        cut.push(dict.tail());
+        let (text, recovered, dropped) =
+            decode_mainstream(&cut.into_iter().collect::<String>()).expect("头尾完好就应当解得开");
+        assert_eq!(text, "你");
+        assert_eq!(dropped, 6);
+        assert_eq!(recovered, dict);
     }
 
     /// 默认字典的 BeastDict 方法与旧自由函数逐字符一致（增量不破坏既有语义）
