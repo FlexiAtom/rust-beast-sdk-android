@@ -31,12 +31,17 @@
 Android SDK（platform `android-34` + 任一 build-tools）、NDK、JDK 8+、`python3`、`zip`/`unzip`/`curl`。
 
 ```bash
-./scripts/build_apk.sh aarch64 armv7 x86_64     # 通用包
-./scripts/build_apk.sh aarch64                  # 只出 arm64
+./scripts/build_apk.sh aarch64 armv7 x86_64   # 三个分 ABI 包 + 一个通用包
+./scripts/build_apk.sh aarch64                # 只出 arm64 分包
 ```
 
-产物在 `dist/beast-<版本>-<abi 组合>.apk`。**版本号只有一个来源**：`scripts/build_apk.sh` 里的
-`VERSION` / `VERSION_CODE`，改它，manifest 与产物名一起变。
+产物在 `dist/beast-<版本>-<abi>.apk`，多 ABI 时另出 `dist/beast-<版本>-universal.apk`。
+发版四个文件都传：**arm64-v8a**（近几年的手机基本都是它，约 11 MB）、**armeabi-v7a**（老 32 位机，
+约 11 MB）、**x86_64**（模拟器 / Chromebook，约 11 MB）、**universal**（不确定机型，约 29 MB）。
+分包与通用包可以互相覆盖升级：同一把签名键、同一个 `versionCode`，装哪个都行。
+
+**版本号只有一个来源**：`scripts/build_apk.sh` 里的 `VERSION` / `VERSION_CODE`，改它，manifest
+与全部产物名一起变。
 
 组包链是 `cargo` 交叉编译 cdylib → `scripts/build_dex.sh`（`javac` + `d8`）→ `aapt2 link` →
 塞 `lib/<abi>` → `zipalign` → `apksigner`，全程不走 Gradle。
@@ -108,13 +113,20 @@ input text` 对 CJK 直接 NPE），原话「已测试，提示正确弹出」�
 而非硬编码的字符串」）。现在勾选主流兼容走 `decode_mainstream`，字典从串的头尾提取。报错文案同样
 去掉了硬编码的 `~呜嗷` / `啊`，改为按**当前字典**的头尾描述。
 
+人工已用**真实非示例**的兽语串（自定义字典 `配方复活`）装机测过，原话「人工测试通过，确认可以
+兼容主流协议（主流协议指头尾附加）」⇒ 跨字典提取这条路由人工在真机确认。
+
+**0.1.1 起出分 ABI 包**：`arm64-v8a` 分包已在真机覆盖装上 0.1.0 通用包（`versionCode` 1→2，
+`Success`，启动后 `mCurrentFocus` 是本包 GameActivity），从设备回拉的 `base.apk` 与 `dist/` 那只
+`sha256` 逐字节相同（`4622d69a…dbb44da`），回拉件证书指纹仍是 `KS_CERT_SHA256`。
+
 **未证**：
 
-- 跨字典解码只由 Rust 侧往返测试覆盖（4 套字典 × 4 段文本，含 `αβγδ` / `一二三四` / `嗷呜啊~` /
-  emoji），**没有**与主流工具做过非默认字典的差分——3359 条向量和 11 条实测原文全是默认字典。
-  那 11 条实测串本身走过提取这条路（解出原文、提出默认字典、无残缺尾部），但它证明的是格式定义
-  在默认字典上成立，不等于主流工具换字典后也这么解。提取规则来自主流格式的定义
-  （头 = 字典 1 基序号 `4+2+1`、尾 = `3`）。
+- 跨字典提取缺**外部差分**：真机确认来自人工，机器侧证据是 Rust 往返（4 套字典 × 4 段文本）加上
+  11 条主流实测串走同一条提取路（解出原文、提出默认字典、无残缺尾部）。手里没有一份主流工具用
+  **非默认字典**产出的串可对，所以"主流工具换字典后也这么解"仍是按格式定义（头 = 1 基序号
+  `4+2+1`、尾 = `3`）推的，不是差分实测出来的。
 - `armeabi-v7a` / `x86_64` 两条 `.so` 只过了编译，本机没有 32 位或 x86 设备/模拟器，运行期从未执行过。
+  0.1.1 的分包让这两条各自能被安装，但装机核验只做了 `arm64-v8a`。
 - 整个 APK 不是字节级可复现：zip 条目带时间戳，且 `d8`（build-tools 37.0.0 / D8 9.2.4-dev）与
   `javac 17.0.20.1` 未钉版本。可复现性目前只覆盖到 `classes.dex` 这一层。
