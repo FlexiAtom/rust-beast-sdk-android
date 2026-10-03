@@ -30,6 +30,24 @@ VERSION_CODE="1"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
+# 发布签名键：刻意**不在仓库里、也不在 dist/**（dist 会被清，清了键就没了，老包再也覆盖不了）。
+# 换键 = 已装机的用户必须卸载重装，所以指纹钉在下面，每次组包实测比对，不匹配就停。
+KS="${BEAST_KEYSTORE:-$HOME/.beast-android/release.keystore}"
+KS_PASS_FILE="${BEAST_KEYSTORE_PASS_FILE:-$KS.pass}"
+KS_ALIAS="beast"
+# apksigner 对两个 `file:` 口令走同一个 reader，路径相同就会把第二行读到 EOF
+# （报 "end of file reached"），所以库口令与键口令必须是两个文件。
+KEY_PASS_FILE="${BEAST_KEY_PASS_FILE:-$KS.$KS_ALIAS.pass}"
+KS_CERT_SHA256="d211cfa81c6ef49cd1ab282f140686007bcfd50cde61285c29030e9cfb87b81c"
+# 缺键在**开跑前**就报，别等 cargo 编完几分钟才死在最后一步
+if [ ! -f "$KS" ] || [ ! -f "$KS_PASS_FILE" ] || [ ! -f "$KEY_PASS_FILE" ]; then
+  echo "找不到发布签名键：$KS（库口令 $KS_PASS_FILE，键口令 $KEY_PASS_FILE）。" >&2
+  echo "键不存在时不自动生成——换签名键会让已装机用户无法覆盖升级。" >&2
+  echo "要么把键放回来，要么用 BEAST_KEYSTORE / BEAST_KEYSTORE_PASS_FILE / BEAST_KEY_PASS_FILE 指路，" >&2
+  echo "要么明确换键并同步改本脚本里钉住的 KS_CERT_SHA256。" >&2
+  exit 1
+fi
+
 declare -A TRIPLE=( [aarch64]=aarch64-linux-android [armv7]=armv7-linux-androideabi [x86_64]=x86_64-linux-android )
 declare -A ANDROID_ABI=( [aarch64]=arm64-v8a [armv7]=armeabi-v7a [x86_64]=x86_64 )
 
@@ -76,17 +94,22 @@ cp "$OUT/classes.dex" "$STAGE/classes.dex"
 (cd "$STAGE" && zip -q -X unaligned.apk classes.dex)
 "$BUILD_TOOLS/zipalign" -f -p 4 "$STAGE/unaligned.apk" "$STAGE/aligned.apk"
 
-KS="$OUT/debug.keystore"
-if [ ! -f "$KS" ]; then
-  keytool -genkeypair -keystore "$KS" -storepass android -keypass android \
-    -alias androiddebugkey -dname "CN=Debug" -keyalg RSA -keysize 2048 -validity 10000 2>/dev/null
-fi
 # 三个 ABI 齐全就按通用包命名，否则列出实际打包的 ABI
 TAG="$(for abi in "${ABIS[@]}"; do echo "${ANDROID_ABI[$abi]}"; done | sort -u | paste -sd- -)"
 [ "$TAG" = "arm64-v8a-armeabi-v7a-x86_64" ] && TAG="universal"
 APK="$OUT/beast-${VERSION}-${TAG}.apk"
 cp "$STAGE/aligned.apk" "$APK"
-"$BUILD_TOOLS/apksigner" sign --ks "$KS" --ks-pass pass:android --key-pass pass:android "$APK"
+
+"$BUILD_TOOLS/apksigner" sign --ks "$KS" --ks-key-alias "$KS_ALIAS" \
+  --ks-pass "file:$KS_PASS_FILE" --key-pass "file:$KEY_PASS_FILE" "$APK"
 "$BUILD_TOOLS/apksigner" verify "$APK"
+# 再核一次产物里实际落下的证书指纹：防止指错了另一把"也存在"的键
+got="$("$BUILD_TOOLS/apksigner" verify --print-certs "$APK" \
+      | sed -n 's/.*certificate SHA-256 digest: //p' | head -1 | tr 'A-Z' 'a-z')"
+if [ "$got" != "$KS_CERT_SHA256" ]; then
+  echo "签名指纹与钉住的发布键不符：产物 $got ≠ 预期 $KS_CERT_SHA256" >&2
+  exit 1
+fi
+echo "签名指纹核对通过: $got"
 ls -lh "$APK"
 echo "OK: $APK"
