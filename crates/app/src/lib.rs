@@ -60,7 +60,7 @@ impl BeastApp {
         let _ = ctx;
         #[cfg(target_os = "android")]
         if let Some(message) = self.notice.take() {
-            toast::show(message);
+            android::toast(message);
         }
         #[cfg(not(target_os = "android"))]
         if self.notice.is_some() {
@@ -76,23 +76,38 @@ impl BeastApp {
             }
         }
     }
+
+    /// 点输入框就强制要一次软键盘。egui-winit 只在"要不要 IME"翻转时才发请求，
+    /// 键盘被返回键收掉后焦点没变、不再翻转，光靠它要不回来。
+    #[cfg(target_os = "android")]
+    fn kick_keyboard(response: &egui::Response) {
+        if response.has_focus() && (response.gained_focus() || response.clicked()) {
+            android::show_keyboard();
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn kick_keyboard(_response: &egui::Response) {}
 }
 
 impl eframe::App for BeastApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         #[cfg(target_os = "android")]
-        for event in ctx.input(|i| i.events.clone()) {
-            log::debug!("egui 事件: {event:?}");
-        }
+        android::pump_ime(ctx);
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.checkbox(&mut self.mainstream, "主流兼容");
-            ui.label("文本框");
-            let box_height = ui.available_height() - 60.0;
-            ui.add(
+            #[cfg(target_os = "android")]
+            ui.add_space(android::top_inset_px() as f32 / ui.ctx().pixels_per_point());
+            // 第 1 行文本框，第 2~4 行是按键 / 字典 / 主流兼容，高度按行高预留
+            let row = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+            let text_edit = ui.add(
                 egui::TextEdit::multiline(&mut self.text)
                     .desired_width(f32::INFINITY)
-                    .min_size(egui::vec2(ui.available_width(), box_height)),
+                    .min_size(egui::vec2(
+                        ui.available_width(),
+                        (ui.available_height() - 3.0 * row).max(80.0),
+                    )),
             );
+            Self::kick_keyboard(&text_edit);
             ui.horizontal(|ui| {
                 if ui.button("翻译为兽音").clicked() {
                     if let Err(e) = self.translate_to_beast() {
@@ -104,12 +119,17 @@ impl eframe::App for BeastApp {
                         self.notice = Some(e);
                     }
                 }
-                ui.add(
+            });
+            ui.horizontal(|ui| {
+                ui.label("字典");
+                let dict_edit = ui.add(
                     egui::TextEdit::singleline(&mut self.dict_input)
                         .desired_width(120.0)
                         .hint_text("嗷呜啊~"),
                 );
+                Self::kick_keyboard(&dict_edit);
             });
+            ui.checkbox(&mut self.mainstream, "主流兼容");
         });
         self.show_notice(ctx);
     }
@@ -143,19 +163,19 @@ pub fn start(app: eframe::NativeOptions) -> Result<(), eframe::Error> {
 }
 
 #[cfg(target_os = "android")]
-mod toast;
+mod android;
 
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub fn android_main(app: winit::platform::android::activity::AndroidApp) {
     android_logger::init_once(
         android_logger::Config::default()
-            .with_max_level(log::LevelFilter::Trace)
+            .with_max_level(log::LevelFilter::Debug)
             .with_tag("beast-app"),
     );
     std::panic::set_hook(Box::new(|info| log::error!("panic: {info}")));
     log::info!("android_main 进入");
-    toast::bind(&app);
+    android::bind(&app);
     // eframe 0.31 要求把 AndroidApp 放在这里，它自己调 with_android_app；
     // 只挂 event_loop_builder 会被它忽略，报 "missing required android_app"
     let options = eframe::NativeOptions {

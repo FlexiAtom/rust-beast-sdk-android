@@ -80,9 +80,11 @@ impl BeastDict {
     /// 从恰好 4 个字符的字符串建字典（按 `chars()` 计数，任何 Unicode 字符都可以）
     pub fn parse(s: &str) -> Result<Self, DictError> {
         let chars: Vec<char> = s.chars().collect();
-        let chars: [char; 4] = chars.try_into().map_err(|v: Vec<char>| DictError::WrongLength {
-            char_count: v.len(),
-        })?;
+        let chars: [char; 4] = chars
+            .try_into()
+            .map_err(|v: Vec<char>| DictError::WrongLength {
+                char_count: v.len(),
+            })?;
         Self::new(chars)
     }
 
@@ -96,7 +98,9 @@ impl BeastDict {
 
     /// 主流头 = 字典 1 基序号 `4 + 2 + 1`
     pub fn head(&self) -> String {
-        [self.chars[3], self.chars[1], self.chars[0]].into_iter().collect()
+        [self.chars[3], self.chars[1], self.chars[0]]
+            .into_iter()
+            .collect()
     }
 
     /// 主流尾 = 字典 1 基序号 `3`
@@ -142,8 +146,12 @@ impl BeastDict {
         }
         let mut nibbles = Vec::with_capacity(chars.len() / 2);
         for (n, pair) in chars.chunks(2).enumerate() {
-            let high = self.index(pair[0]).ok_or(DecodeError::UnknownChar(pair[0]))?;
-            let low = self.index(pair[1]).ok_or(DecodeError::UnknownChar(pair[1]))?;
+            let high = self
+                .index(pair[0])
+                .ok_or(DecodeError::UnknownChar(pair[0]))?;
+            let low = self
+                .index(pair[1])
+                .ok_or(DecodeError::UnknownChar(pair[1]))?;
             let k = (high * DICT_BASE + low) as isize - (n % 16) as isize;
             nibbles.push(rem(k, 16) as u16);
         }
@@ -419,9 +427,18 @@ mod tests {
 
     #[test]
     fn dict_validation() {
-        assert_eq!(BeastDict::parse("aaa"), Err(DictError::WrongLength { char_count: 3 }));
-        assert_eq!(BeastDict::parse("嗷呜啊~x").unwrap_err(), DictError::WrongLength { char_count: 5 });
-        assert_eq!(BeastDict::parse("嗷呜啊嗷"), Err(DictError::DuplicateChar('嗷')));
+        assert_eq!(
+            BeastDict::parse("aaa"),
+            Err(DictError::WrongLength { char_count: 3 })
+        );
+        assert_eq!(
+            BeastDict::parse("嗷呜啊~x").unwrap_err(),
+            DictError::WrongLength { char_count: 5 }
+        );
+        assert_eq!(
+            BeastDict::parse("嗷呜啊嗷"),
+            Err(DictError::DuplicateChar('嗷'))
+        );
         assert!(BeastDict::parse("呜啊~嗷").is_ok()); // 换序合法，头尾随之变
     }
 }

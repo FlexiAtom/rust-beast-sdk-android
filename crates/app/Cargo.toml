@@ -14,7 +14,10 @@ beast-core = { path = "../beast-core" }
 eframe = "0.31"
 
 [target.'cfg(target_os = "android")'.dependencies]
-winit = { version = "0.30", features = ["android-native-activity"] }
+eframe = { version = "0.31", features = ["android-game-activity"] }
+winit = { version = "0.30", features = ["android-game-activity"] }
+# 版本必须与 winit 内部依赖一致，否则会出现两个 AndroidApp 类型
+android-activity = { version = "0.6", features = ["game-activity"] }
 android_logger = "0.14"
 log = "0.4"
 jni = "0.22"

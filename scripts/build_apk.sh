@@ -22,9 +22,10 @@ cat > "$STAGE/AndroidManifest.xml" <<'EOF'
     package="com.flexiatom.beast"
     android:versionCode="1" android:versionName="0.1.0">
     <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="34"/>
-    <application android:label="兽音译者" android:hasCode="false">
-        <activity android:name="android.app.NativeActivity"
+    <application android:label="兽音译者">
+        <activity android:name="com.google.androidgamesdk.GameActivity"
                   android:label="兽音译者"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
                   android:exported="true"
                   android:configChanges="keyboardHidden|orientation|screenSize|screenLayout|uiMode|density|navigation">
             <meta-data android:name="android.app.lib_name" android:value="beast_app"/>
@@ -48,9 +49,13 @@ for abi in "${ABIS[@]}"; do
   cp "$d" "$STAGE/lib/${ANDROID_ABI[$abi]}/libbeast_app.so"
 done
 
+"$ROOT/scripts/build_dex.sh"
+
 "$BUILD_TOOLS/aapt2" link -o "$STAGE/unaligned.apk" -I "$PLATFORM" \
   --manifest "$STAGE/AndroidManifest.xml"
 (cd "$STAGE" && zip -q -r unaligned.apk lib)
+cp "$OUT/classes.dex" "$STAGE/classes.dex"
+(cd "$STAGE" && zip -q -X unaligned.apk classes.dex)
 "$BUILD_TOOLS/zipalign" -f -p 4 "$STAGE/unaligned.apk" "$STAGE/aligned.apk"
 
 KS="$OUT/debug.keystore"
