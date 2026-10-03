@@ -25,8 +25,8 @@ PLATFORM="$SDK/platforms/android-34/android.jar"
 ABIS=("${@:-aarch64}")
 OUT="$ROOT/dist"
 # 版本号单一来源：改这里，manifest 与产物名一起变
-VERSION="0.1.1"
-VERSION_CODE="2"
+VERSION="0.1.2"
+VERSION_CODE="3"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 

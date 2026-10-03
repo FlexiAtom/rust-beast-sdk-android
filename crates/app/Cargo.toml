@@ -1,6 +1,6 @@
 [package]
 name = "beast-app"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "兽音译者安卓 app（纯 Rust，eframe/egui）"
 license = "AGPL-3.0-or-later"
@@ -12,6 +12,13 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 beast-core = { path = "../beast-core" }
 eframe = "0.31"
+# 两个平台都要打日志（剪贴板失败也走它），所以放在公共依赖里
+log = "0.4"
+
+# 桌面侧系统剪贴板。安卓不走它：egui-winit 0.31 的 clipboard.rs 把 arboard 整段
+# 挂在 `not(target_os = "android")` 上，安卓那侧是 JNI（见 src/clipboard.rs）。
+[target.'cfg(not(target_os = "android"))'.dependencies]
+arboard = "3"
 
 [target.'cfg(target_os = "android")'.dependencies]
 eframe = { version = "0.31", features = ["android-game-activity"] }
@@ -19,5 +26,4 @@ winit = { version = "0.30", features = ["android-game-activity"] }
 # 版本必须与 winit 内部依赖一致，否则会出现两个 AndroidApp 类型
 android-activity = { version = "0.6", features = ["game-activity"] }
 android_logger = "0.14"
-log = "0.4"
 jni = "0.22"

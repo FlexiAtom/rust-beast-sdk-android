@@ -14,13 +14,14 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 
-//! 安卓平台侧：原生「提示」（Toast）+ 把 GameActivity 的输入法缓冲搬进 egui。
+//! 安卓平台侧：原生「提示」（Toast）+ 把 GameActivity 的输入法缓冲搬进 egui + 系统剪贴板。
 
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::mpsc;
 use std::sync::OnceLock;
 
 use eframe::egui;
-use jni::objects::{JObject, JValue};
+use jni::objects::{JObject, JString, JValue};
 use jni::{jni_sig, jni_str};
 use winit::platform::android::activity::AndroidApp;
 
@@ -153,4 +154,136 @@ fn show_toast(app: &AndroidApp, message: &str) -> Result<(), Box<dyn std::error:
         env.call_method(&toast, jni_str!("show"), jni_sig!("()V"), &[])?;
         Ok(())
     })
+}
+
+/// 系统剪贴板写入。`ClipboardManager` 按 Android 的约定要在 Java 主线程用，
+/// 所以和 Toast 一样走 `run_on_java_main_thread`。
+pub fn clipboard_set(text: &str) {
+    let Some(app) = APP.get() else {
+        log::error!("AndroidApp 未绑定，复制发不出去");
+        return;
+    };
+    let worker = app.clone();
+    let owned = text.to_owned();
+    app.run_on_java_main_thread(Box::new(move || {
+        if let Err(e) = clipboard_write(&worker, &owned) {
+            log::error!("写入系统剪贴板失败: {e}");
+        }
+    }));
+}
+
+/// 系统剪贴板读取。主线程那边排不上队（Activity 正在销毁等）就按取不到处理，
+/// 不把 UI 线程挂住。
+pub fn clipboard_get() -> Option<String> {
+    let app = APP.get()?;
+    let (tx, rx) = mpsc::channel();
+    let worker = app.clone();
+    app.run_on_java_main_thread(Box::new(move || {
+        let _ = tx.send(clipboard_read(&worker));
+    }));
+    rx.recv_timeout(std::time::Duration::from_millis(500))
+        .ok()
+        .flatten()
+}
+
+/// `ClipboardManager` 的取用。参数类型必须是 `jni::Env`（带方法的那个）：
+/// 0.22 起 `jni::JNIEnv` 是 `EnvUnowned` 的别名，只剩指针、没有 `new_string`/`call_method`。
+fn clipboard_manager<'local>(
+    env: &mut jni::Env<'local>,
+    activity: &JObject<'local>,
+) -> jni::errors::Result<JObject<'local>> {
+    let name: JObject = env.new_string("clipboard")?.into();
+    env.call_method(
+        activity,
+        jni_str!("getSystemService"),
+        jni_sig!("(Ljava/lang/String;)Ljava/lang/Object;"),
+        &[JValue::Object(&name)],
+    )?
+    .l()
+}
+
+fn clipboard_write(app: &AndroidApp, text: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr() as *mut jni::sys::JavaVM) };
+    // 闭包的错误类型要写死：`From<jni::Error>` 现在有好几个候选实现，`Ok(())` 推不出 `E`
+    vm.attach_current_thread(|env| -> jni::errors::Result<()> {
+        let activity =
+            unsafe { JObject::from_raw(env, app.activity_as_ptr() as jni::sys::jobject) };
+        let manager = clipboard_manager(env, &activity)?;
+        let label: JObject = env.new_string("兽音译者")?.into();
+        let body: JObject = env.new_string(text)?.into();
+        let clip = env.call_static_method(
+            jni_str!("android/content/ClipData"),
+            jni_str!("newPlainText"),
+            jni_sig!(
+                "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Landroid/content/ClipData;"
+            ),
+            &[JValue::Object(&label), JValue::Object(&body)],
+        )?;
+        let clip = clip.l()?;
+        env.call_method(
+            &manager,
+            jni_str!("setPrimaryClip"),
+            jni_sig!("(Landroid/content/ClipData;)V"),
+            &[JValue::Object(&clip)],
+        )?;
+        Ok(())
+    })
+    .map_err(Into::into)
+}
+
+fn clipboard_read(app: &AndroidApp) -> Option<String> {
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr() as *mut jni::sys::JavaVM) };
+    vm.attach_current_thread(|env| -> jni::errors::Result<Option<String>> {
+        let activity =
+            unsafe { JObject::from_raw(env, app.activity_as_ptr() as jni::sys::jobject) };
+        let manager = clipboard_manager(env, &activity)?;
+        let clip = env
+            .call_method(
+                &manager,
+                jni_str!("getPrimaryClip"),
+                jni_sig!("()Landroid/content/ClipData;"),
+                &[],
+            )?
+            .l()?;
+        if clip.is_null() {
+            return Ok(None);
+        }
+        let count = env
+            .call_method(&clip, jni_str!("getItemCount"), jni_sig!("()I"), &[])?
+            .i()?;
+        if count <= 0 {
+            return Ok(None);
+        }
+        let item = env
+            .call_method(
+                &clip,
+                jni_str!("getItemAt"),
+                jni_sig!("(I)Landroid/content/ClipData$Item;"),
+                &[JValue::Int(0)],
+            )?
+            .l()?;
+        let text = env
+            .call_method(
+                &item,
+                jni_str!("coerceToText"),
+                jni_sig!("(Landroid/content/Context;)Ljava/lang/CharSequence;"),
+                &[JValue::Object(&activity)],
+            )?
+            .l()?;
+        let text = env
+            .call_method(
+                &text,
+                jni_str!("toString"),
+                jni_sig!("()Ljava/lang/String;"),
+                &[],
+            )?
+            .l()?;
+        // toString 已经保证是 java.lang.String，但 `.l()` 只给 JObject；
+        // get_string 要 `AsRef<JString>`，所以按 jni 0.22 的 cast_local 转一次
+        let text = env.cast_local::<JString>(text)?;
+        let owned = text.try_to_string(env)?;
+        Ok(if owned.is_empty() { None } else { Some(owned) })
+    })
+    .ok()
+    .flatten()
 }

@@ -16,6 +16,15 @@
 
 use eframe::egui;
 
+/// 长按菜单里可点的动作。选中范围、复制内容都由 egui 的 TextEdit 自己算，
+/// 这里只是把它的 `Event::Copy` / `Event::Paste` 递进队列，全选写它自己的选区状态。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MenuPick {
+    Copy,
+    Paste,
+    SelectAll,
+}
+
 pub struct BeastApp {
     /// 唯一的文本框：人话和兽音在这里互相覆盖
     text: String,
@@ -26,6 +35,9 @@ pub struct BeastApp {
     dict_input: String,
     /// 待弹出的「提示」
     notice: Option<String>,
+    /// 长按菜单点出来的动作，攒着**下一帧开头**喂进 egui 事件队列：`Event::Copy/Paste`
+    /// 必须在 TextEdit 被绘制之前进队列，本帧内推会被 `end_pass` 清掉。
+    pending_events: Vec<egui::Event>,
 }
 
 impl Default for BeastApp {
@@ -35,6 +47,7 @@ impl Default for BeastApp {
             mainstream: true,
             dict_input: beast::BEAST.iter().collect(),
             notice: None,
+            pending_events: Vec::new(),
         }
     }
 }
@@ -120,12 +133,79 @@ impl BeastApp {
 
     #[cfg(not(target_os = "android"))]
     fn kick_keyboard(_response: &egui::Response) {}
+
+    /// 长按（egui 把触屏长按转成 secondary click）弹它自带的 `context_menu`。
+    fn text_menu(response: &egui::Response, out: &mut Option<(egui::Id, MenuPick)>) {
+        let id = response.id;
+        response.context_menu(|ui| {
+            if ui.button("复制").clicked() {
+                *out = Some((id, MenuPick::Copy));
+                ui.close_menu();
+            }
+            if ui.button("粘贴").clicked() {
+                *out = Some((id, MenuPick::Paste));
+                ui.close_menu();
+            }
+            if ui.button("全选").clicked() {
+                *out = Some((id, MenuPick::SelectAll));
+                ui.close_menu();
+            }
+        });
+    }
+
+    /// 复制走 egui 的选区；没有选区时复制整个文本框。粘贴与全选都递给 egui，
+    /// 由它在**下一帧**（`pending_events` 在帧首入队）按自己的规则替换选区或插入光标处。
+    fn apply_menu(&mut self, ctx: &egui::Context, id: egui::Id, pick: MenuPick) {
+        let selected = egui::text_edit::TextEditState::load(ctx, id)
+            .and_then(|state| state.cursor.char_range())
+            .is_some_and(|range| {
+                let ends = range.sorted();
+                ends[0].index != ends[1].index
+            });
+        match pick {
+            MenuPick::Copy if selected => self.pending_events.push(egui::Event::Copy),
+            MenuPick::Copy => {
+                if self.text.is_empty() {
+                    self.notice = Some("文本框是空的，没东西可复制".to_owned());
+                } else {
+                    let chars = self.text.chars().count();
+                    clipboard::copy(&self.text);
+                    self.notice = Some(format!("已复制全部 {chars} 个字"));
+                }
+            }
+            MenuPick::Paste => match clipboard::paste() {
+                Some(text) => self.pending_events.push(egui::Event::Paste(text)),
+                None => self.notice = Some("系统剪贴板是空的（或取不到）".to_owned()),
+            },
+            MenuPick::SelectAll => {
+                // egui 0.31 没有 `Event::SelectAll`，但它把选区存在公开的 `TextEditState` 里，
+                // 写整段区间就是它自己的全选（高亮、之后的复制/粘贴都按这个选区走）。
+                // 状态还没被 TextEdit 建出来时按默认值补一份：下一帧 TextEdit 会拿自己的
+                // galley 把区间钳回实际长度，不会越界。
+                let len = self.text.chars().count();
+                let mut state = egui::text_edit::TextEditState::load(ctx, id).unwrap_or_default();
+                state
+                    .cursor
+                    .set_char_range(Some(egui::text_selection::CCursorRange::two(
+                        egui::epaint::text::cursor::CCursor::new(0),
+                        egui::epaint::text::cursor::CCursor::new(len),
+                    )));
+                state.store(ctx, id);
+            }
+        }
+        ctx.request_repaint();
+    }
 }
 
 impl eframe::App for BeastApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         #[cfg(target_os = "android")]
         android::pump_ime(ctx);
+        if !self.pending_events.is_empty() {
+            let queued = std::mem::take(&mut self.pending_events);
+            ctx.input_mut(|i| i.events.extend(queued));
+        }
+        let mut menu_pick: Option<(egui::Id, MenuPick)> = None;
         egui::CentralPanel::default().show(ctx, |ui| {
             #[cfg(target_os = "android")]
             ui.add_space(android::top_inset_px() as f32 / ui.ctx().pixels_per_point());
@@ -140,6 +220,7 @@ impl eframe::App for BeastApp {
                     )),
             );
             Self::kick_keyboard(&text_edit);
+            Self::text_menu(&text_edit, &mut menu_pick);
             ui.horizontal(|ui| {
                 if ui.button("翻译为兽音").clicked() {
                     if let Err(e) = self.translate_to_beast() {
@@ -160,9 +241,31 @@ impl eframe::App for BeastApp {
                         .hint_text("嗷呜啊~"),
                 );
                 Self::kick_keyboard(&dict_edit);
+                Self::text_menu(&dict_edit, &mut menu_pick);
             });
             ui.checkbox(&mut self.mainstream, "主流兼容");
         });
+        if let Some((id, pick)) = menu_pick.take() {
+            self.apply_menu(ctx, id, pick);
+        }
+        // egui 的复制出口在安卓上是断的：egui-winit 0.31 的 clipboard.rs 把 arboard 整段挂在
+        // `not(target_os = "android")` 上，于是 `OutputCommand::CopyText` 只落进它那个
+        // "同一个 app 内才看得见"的兜底 `String`。这里在 egui-winit 之前把 CopyText 抢出来
+        // 接到系统剪贴板，别的 app 才粘得出来；其余命令原样留着给它处理。桌面由 eframe 自己走。
+        #[cfg(target_os = "android")]
+        {
+            let commands = ctx.output_mut(|o| std::mem::take(&mut o.commands));
+            let mut keep = Vec::new();
+            for command in commands {
+                match command {
+                    egui::OutputCommand::CopyText(text) => clipboard::copy(&text),
+                    other => keep.push(other),
+                }
+            }
+            if !keep.is_empty() {
+                ctx.output_mut(|o| o.commands.extend(keep));
+            }
+        }
         self.show_notice(ctx);
     }
 }
@@ -193,6 +296,8 @@ pub fn start(app: eframe::NativeOptions) -> Result<(), eframe::Error> {
         Box::new(|cc| Ok(Box::new(BeastApp::new(cc)))),
     )
 }
+
+mod clipboard;
 
 #[cfg(target_os = "android")]
 mod android;
@@ -356,5 +461,108 @@ mod tests {
         assert_eq!(app.text, "兽音");
         app.translate_to_beast().unwrap();
         assert_eq!(app.text, incoming, "解出来再编回去应当逐字符相同");
+    }
+
+    /// 直接写 egui 自己那份选区状态，跟手指拖选后落的是同一个格子
+    fn select(ctx: &egui::Context, id: egui::Id, from: usize, to: usize) {
+        let mut state = egui::text_edit::TextEditState::load(ctx, id).unwrap_or_default();
+        state
+            .cursor
+            .set_char_range(Some(egui::text_selection::CCursorRange::two(
+                egui::epaint::text::cursor::CCursor::new(from),
+                egui::epaint::text::cursor::CCursor::new(to),
+            )));
+        state.store(ctx, id);
+    }
+
+    fn selected_range(ctx: &egui::Context, id: egui::Id) -> Option<(usize, usize)> {
+        egui::text_edit::TextEditState::load(ctx, id)
+            .and_then(|state| state.cursor.char_range())
+            .map(|range| {
+                let ends = range.sorted();
+                (ends[0].index, ends[1].index)
+            })
+    }
+
+    /// 有选区时把 egui 自己的 `Event::Copy` 攒进队列，不碰文本、不弹提示
+    #[test]
+    fn copy_with_selection_queues_eguis_own_copy_event() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("box");
+        let mut app = BeastApp {
+            text: "呜啊呜嗷".into(),
+            ..Default::default()
+        };
+        select(&ctx, id, 0, 2);
+        app.apply_menu(&ctx, id, MenuPick::Copy);
+        assert!(
+            matches!(app.pending_events.as_slice(), [egui::Event::Copy]),
+            "{:?}",
+            app.pending_events
+        );
+        assert!(app.notice.is_none());
+    }
+
+    /// 没选区就复制整框——这是"复制文本里的内容"那条要求，不依赖手指能不能拖出选区
+    #[test]
+    fn copy_without_selection_copies_the_whole_box() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("box");
+        let mut app = BeastApp {
+            text: "呜啊呜嗷".into(),
+            ..Default::default()
+        };
+        app.apply_menu(&ctx, id, MenuPick::Copy);
+        assert!(app.pending_events.is_empty(), "没选区不该发 Event::Copy");
+        let notice = app.notice.expect("复制全部应当给出字数");
+        assert!(notice.contains('4'), "{notice}");
+    }
+
+    #[test]
+    fn copy_of_empty_text_says_so_instead_of_claiming_a_copy() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("box");
+        let mut app = BeastApp::default();
+        app.apply_menu(&ctx, id, MenuPick::Copy);
+        assert!(app.pending_events.is_empty());
+        assert!(app.notice.expect("空框要有提示").contains("空"));
+    }
+
+    /// 全选 = 写满 egui 的选区，之后点复制走的是选区那条路（不是整框兜底）
+    #[test]
+    fn select_all_then_copy_goes_through_the_selection_path() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("box");
+        let mut app = BeastApp {
+            text: "呜啊呜嗷".into(),
+            ..Default::default()
+        };
+        app.apply_menu(&ctx, id, MenuPick::SelectAll);
+        assert_eq!(selected_range(&ctx, id), Some((0, 4)));
+        app.apply_menu(&ctx, id, MenuPick::Copy);
+        assert!(
+            matches!(app.pending_events.as_slice(), [egui::Event::Copy]),
+            "{:?}",
+            app.pending_events
+        );
+        assert!(app.notice.is_none(), "全选后不该掉进\"已复制全部\"兜底");
+    }
+
+    /// 粘贴不能静默：要么把 Event::Paste 攒进队列，要么说明取不到
+    #[test]
+    fn paste_queues_an_event_or_says_why_it_did_not() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("box");
+        let mut app = BeastApp::default();
+        app.apply_menu(&ctx, id, MenuPick::Paste);
+        assert!(
+            !app.pending_events.is_empty() || app.notice.is_some(),
+            "粘不动又不吭声，用户只会以为按钮坏了"
+        );
+        for event in &app.pending_events {
+            if let egui::Event::Paste(text) = event {
+                assert!(!text.is_empty(), "空剪贴板不该发 Paste 事件");
+            }
+        }
     }
 }
