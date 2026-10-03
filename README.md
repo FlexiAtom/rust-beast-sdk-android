@@ -40,6 +40,10 @@ Android SDK（platform `android-34` + 任一 build-tools）、NDK、JDK 8+、`py
 约 11 MB）、**x86_64**（模拟器 / Chromebook，约 11 MB）、**universal**（不确定机型，约 29 MB）。
 分包与通用包可以互相覆盖升级：同一把签名键、同一个 `versionCode`，装哪个都行。
 
+**别拿 `dist/beast-0.1.0-universal.apk` 发版**：它在修复当天被重出过一次，包体已含「从串里提字典」
+的跨字典修复，文件名与 manifest 却仍是 `0.1.0` / `versionCode=1`，而 tag `v0.1.0` 的树并不含该修复。
+以版本论事：跨字典修复随 **0.1.1** 发。
+
 **版本号只有一个来源**：`scripts/build_apk.sh` 里的 `VERSION` / `VERSION_CODE`，改它，manifest
 与全部产物名一起变。
 
