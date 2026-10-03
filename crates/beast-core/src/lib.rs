@@ -31,7 +31,8 @@
 //! - **位流永远 4 位对齐**，段边界与码元边界重合，所以 `decode(encode(x)) == x` 对任意输入无损，
 //!   辅助平面（`😀` → `d83d de00`）也还原得回来。
 //! - JS 的 `decode` 按每 4 位切段，**末尾不足 4 位直接丢弃**（`while (end <= length)`），
-//!   这里照搬：不报错也不补位，手写残缺串会静默少解最后一个码元。
+//!   这里照搬：不报错也不补位，手写残缺串会静默少解最后一个码元。要告诉用户少解了多少，
+//!   用 [`BeastDict::decode_with_tail`] / [`BeastDict::decode_body_with_tail`] 拿回丢弃计数。
 //!
 //! Rust 的 `char` 存不了孤立代理项，`String::from_utf16_lossy` 会把它们换成 U+FFFD。
 //! 只有残缺/手写的兽语串能解出孤立代理项——Rust 字符串本身不可能编出它们。
@@ -42,6 +43,12 @@ pub const BEAST: [char; 4] = ['嗷', '呜', '啊', '~'];
 
 /// 字典基数：一个兽语字符承载 log2(4) = 2 位，一对承载一个十六进制位
 const DICT_BASE: usize = 4;
+
+/// 一个 UTF-16 码元写成定长 4 位十六进制，即 4 个 nibble
+const NIBBLES_PER_UNIT: usize = 4;
+
+/// 一个 nibble 编码为一对兽语字符
+const CHARS_PER_NIBBLE: usize = 2;
 
 /// 主流兽音译者附在正文前的头，即字典序号 `4 + 2 + 1`（[`BEAST`] 的第 4、2、1 个）。
 /// [`encode`] 自动加上，[`decode`] 要求它在。
@@ -146,14 +153,28 @@ impl BeastDict {
 
     /// 完整串 → 人话；头尾必须是**本字典**算出的，缺任一即 [`DecodeError::MissingAffix`]
     pub fn decode(&self, beast_text: &str) -> Result<String, DecodeError> {
+        Ok(self.decode_with_tail(beast_text)?.0)
+    }
+
+    /// 同 [`decode`](Self::decode)，但额外返回尾部**被丢弃的字符数**
+    pub fn decode_with_tail(&self, beast_text: &str) -> Result<(String, usize), DecodeError> {
         let core = beast_text
             .strip_prefix(&self.head())
             .and_then(|body| body.strip_suffix(self.tail()))
             .ok_or(DecodeError::MissingAffix)?;
-        self.decode_body(core)
+        self.decode_body_with_tail(core)
     }
 
     pub fn decode_body(&self, beast_text: &str) -> Result<String, DecodeError> {
+        Ok(self.decode_body_with_tail(beast_text)?.0)
+    }
+
+    /// 同 [`decode_body`](Self::decode_body)，但额外返回尾部**被丢弃的字符数**。
+    ///
+    /// 一个 UTF-16 码元要 4 个十六进制位 = 8 个兽语字符，末尾不足 8 个的按主流行为静默丢弃，
+    /// 所以这个计数只可能是 0、2、4、6（奇数长度走 [`DecodeError::OddLength`]）。解码结果本身
+    /// 与 [`decode_body`](Self::decode_body) 逐字符一致，只是把"丢了多少"交给调用方决定要不要提示。
+    pub fn decode_body_with_tail(&self, beast_text: &str) -> Result<(String, usize), DecodeError> {
         let chars: Vec<char> = beast_text.chars().collect();
         if !chars.len().is_multiple_of(2) {
             return Err(DecodeError::OddLength {
@@ -171,14 +192,13 @@ impl BeastDict {
             let k = (high * DICT_BASE + low) as isize - (n % 16) as isize;
             nibbles.push(rem(k, 16) as u16);
         }
-        let mut units = Vec::with_capacity(nibbles.len() / 4);
-        for chunk in nibbles.chunks(4) {
-            if chunk.len() < 4 {
-                break;
-            }
-            units.push(chunk.iter().fold(0u16, |acc, &digit| acc * 16 + digit));
-        }
-        Ok(String::from_utf16_lossy(&units))
+        let dropped = nibbles.len() % NIBBLES_PER_UNIT * CHARS_PER_NIBBLE;
+        let units = nibbles
+            .chunks(NIBBLES_PER_UNIT)
+            .filter(|chunk| chunk.len() == NIBBLES_PER_UNIT)
+            .map(|chunk| chunk.iter().fold(0u16, |acc, &digit| acc * 16 + digit))
+            .collect::<Vec<u16>>();
+        Ok((String::from_utf16_lossy(&units), dropped))
     }
 }
 
@@ -405,6 +425,41 @@ mod tests {
         );
         core.pop(); // 7 个十六进制位 → 只够 1 个码元
         assert_eq!(decode_body(&core.iter().collect::<String>()).unwrap(), "你");
+    }
+
+    /// `*_with_tail` 的文本结果与原函数逐字符一致，只多给出丢弃计数
+    #[test]
+    fn with_tail_counts_the_dropped_chars() {
+        let full = encode_body("你好");
+        let chars: Vec<char> = full.chars().collect();
+        assert_eq!(chars.len(), 16);
+        assert_eq!(
+            BeastDict::DEFAULT.decode_body_with_tail(&full).unwrap(),
+            ("你好".to_owned(), 0)
+        );
+        // 砍掉最后 2/4/6 个字符，第二个码元都凑不满：已读 8 字符，其余全部计入丢弃
+        for cut in [2usize, 4, 6] {
+            let truncated: String = chars[..chars.len() - cut].iter().collect();
+            assert_eq!(
+                BeastDict::DEFAULT
+                    .decode_body_with_tail(&truncated)
+                    .unwrap(),
+                ("你".to_owned(), 8 - cut),
+                "砍掉 {cut} 个字符"
+            );
+        }
+        // 主流完整串：头尾剥掉后正文残缺，同样如实报数
+        let truncated = format!(
+            "{}{}{}",
+            AFFIX_HEAD,
+            chars[..14].iter().collect::<String>(),
+            AFFIX_TAIL
+        );
+        assert_eq!(
+            BeastDict::DEFAULT.decode_with_tail(&truncated).unwrap(),
+            ("你".to_owned(), 6)
+        );
+        assert_eq!(BeastDict::DEFAULT.decode(&truncated).unwrap(), "你");
     }
 
     /// 自定义字典：头尾按 1 基序号 4+2+1 / 3 随字典一起换

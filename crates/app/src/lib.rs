@@ -56,14 +56,22 @@ impl BeastApp {
     }
 
     /// 兽音 → 人话：解得动才覆盖文本框。
+    ///
+    /// 末尾凑不满一个字的残缺字符按主流行为静默丢弃，但这里给出一条提示，避免用户以为解全了。
     fn translate_to_human(&mut self) -> Result<(), String> {
         let dict = Self::active_dict(&self.dict_input)?;
-        let decoded = if self.mainstream {
-            dict.decode(&self.text)
+        let (decoded, dropped) = if self.mainstream {
+            dict.decode_with_tail(&self.text)
         } else {
-            dict.decode_body(&self.text)
-        };
-        self.text = decoded.map_err(|e| e.to_string())?;
+            dict.decode_body_with_tail(&self.text)
+        }
+        .map_err(|e| e.to_string())?;
+        self.text = decoded;
+        if dropped > 0 {
+            self.notice = Some(format!(
+                "末尾 {dropped} 个字符凑不满一个字，已按主流行为丢弃"
+            ));
+        }
         Ok(())
     }
 
@@ -256,6 +264,32 @@ mod tests {
         let err = app.translate_to_human().unwrap_err();
         assert!(err.contains("2 的整数倍"), "{err}");
         assert_eq!(app.text, "呜嗷嗷");
+    }
+
+    /// 尾部残缺：照主流丢弃，但给出提示，不能无声解出半句
+    #[test]
+    fn incomplete_tail_decodes_but_warns() {
+        let mut app = BeastApp {
+            text: beast::encode_body("你好").chars().take(14).collect(),
+            mainstream: false,
+            ..Default::default()
+        };
+        app.translate_to_human().unwrap();
+        assert_eq!(app.text, "你");
+        let notice = app.notice.expect("尾部残缺应当提示");
+        assert!(notice.contains('6'), "{notice}");
+        assert!(notice.contains("丢弃"), "{notice}");
+    }
+
+    #[test]
+    fn complete_decode_leaves_no_notice() {
+        let mut app = BeastApp {
+            text: beast::encode("你好"),
+            ..Default::default()
+        };
+        app.translate_to_human().unwrap();
+        assert_eq!(app.text, "你好");
+        assert!(app.notice.is_none());
     }
 
     #[test]
