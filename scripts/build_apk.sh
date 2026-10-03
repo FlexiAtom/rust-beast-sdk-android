@@ -9,6 +9,9 @@ BUILD_TOOLS="$(ls -d "$SDK"/build-tools/* | sort -V | tail -1)"
 PLATFORM="$SDK/platforms/android-34/android.jar"
 ABIS=("${@:-aarch64}")
 OUT="$ROOT/dist"
+# 版本号单一来源：改这里，manifest 与产物名一起变
+VERSION="0.1.0"
+VERSION_CODE="1"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
@@ -16,11 +19,11 @@ declare -A TRIPLE=( [aarch64]=aarch64-linux-android [armv7]=armv7-linux-androide
 declare -A ANDROID_ABI=( [aarch64]=arm64-v8a [armv7]=armeabi-v7a [x86_64]=x86_64 )
 
 mkdir -p "$OUT"
-cat > "$STAGE/AndroidManifest.xml" <<'EOF'
+cat > "$STAGE/AndroidManifest.xml" <<EOF
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.flexiatom.beast"
-    android:versionCode="1" android:versionName="0.1.0">
+    android:versionCode="${VERSION_CODE}" android:versionName="${VERSION}">
     <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="34"/>
     <application android:label="兽音译者">
         <activity android:name="com.google.androidgamesdk.GameActivity"
@@ -63,7 +66,12 @@ if [ ! -f "$KS" ]; then
   keytool -genkeypair -keystore "$KS" -storepass android -keypass android \
     -alias androiddebugkey -dname "CN=Debug" -keyalg RSA -keysize 2048 -validity 10000 2>/dev/null
 fi
-cp "$STAGE/aligned.apk" "$OUT/beast-debug.apk"
-"$BUILD_TOOLS/apksigner" sign --ks "$KS" --ks-pass pass:android --key-pass pass:android "$OUT/beast-debug.apk"
-"$BUILD_TOOLS/apksigner" verify "$OUT/beast-debug.apk"
-echo "OK: $OUT/beast-debug.apk"
+# 三个 ABI 齐全就按通用包命名，否则列出实际打包的 ABI
+TAG="$(for abi in "${ABIS[@]}"; do echo "${ANDROID_ABI[$abi]}"; done | sort -u | paste -sd- -)"
+[ "$TAG" = "arm64-v8a-armeabi-v7a-x86_64" ] && TAG="universal"
+APK="$OUT/beast-${VERSION}-${TAG}.apk"
+cp "$STAGE/aligned.apk" "$APK"
+"$BUILD_TOOLS/apksigner" sign --ks "$KS" --ks-pass pass:android --key-pass pass:android "$APK"
+"$BUILD_TOOLS/apksigner" verify "$APK"
+ls -lh "$APK"
+echo "OK: $APK"
