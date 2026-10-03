@@ -94,13 +94,12 @@ Android SDK（platform `android-34` + 任一 build-tools）、NDK、JDK 8+、`py
 **已实测**：一台 arm64 真机（API 35）安装并正常运行、中文字形完整、编解码与主流工具逐字符
 兼容（3359 条向量 + 11 条实测原文差分）、`classes.dex` 依赖钉版本后可复现、签名闸能拦下错键。
 **发布键签名的通用包**已装机核验一次：从设备回拉的 `base.apk` 与 `dist/` 产物 `sha256` 逐字节
-相同，回拉件上的证书指纹即 `KS_CERT_SHA256`，包 flags 无 `DEBUGGABLE`。
+相同，回拉件上的证书指纹即 `KS_CERT_SHA256`，包 flags 无 `DEBUGGABLE`。**尾部残缺提示**那条
+Toast 已在真机弹出——由人在框里手敲不凑满一个字的兽语串看到（自动化喂不进去：`adb shell
+input text` 对 CJK 直接 NPE），原话「已测试，提示正确弹出」。
 
 **未证**：
 
 - `armeabi-v7a` / `x86_64` 两条 `.so` 只过了编译，本机没有 32 位或 x86 设备/模拟器，运行期从未执行过。
-- 「尾部残缺提示」这条 Toast 在真机上没被亲眼看到（自动化喂不进残缺兽语串：`adb shell input text` 对
-  CJK 直接 NPE）。人工确认的是"应用正常工作"，没点名这条提示。它走的是错误提示早已实机验证过的同一条
-  `notice → toast` 通路，逻辑有单测覆盖。
 - 整个 APK 不是字节级可复现：zip 条目带时间戳，且 `d8`（build-tools 37.0.0 / D8 9.2.4-dev）与
   `javac 17.0.20.1` 未钉版本。可复现性目前只覆盖到 `classes.dex` 这一层。
