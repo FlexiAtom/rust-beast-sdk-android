@@ -12,6 +12,12 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * --- 本仓改动（Apache-2.0 §4(b) 要求标注） ---
+ * 复制自 rust-mobile/android-games-sdk（commit 090732c3）的 GameActivity.java，
+ * 改动仅基类一处：`androidx.appcompat.app.AppCompatActivity` → `androidx.activity.ComponentActivity`
+ * （含对应 import 替换），因为本仓 classes.dex 里没有 appcompat，而该文件不使用任何 appcompat 专有 API。
+ * 其余 5 个 gametextinput/*.java 为上游原样复制、未改动。
  */
 package com.google.androidgamesdk;
 

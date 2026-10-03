@@ -3,7 +3,7 @@ name = "beast-app"
 version = "0.1.0"
 edition = "2021"
 description = "兽音译者安卓 app（纯 Rust，eframe/egui）"
-license = "MIT"
+license = "AGPL-3.0-or-later"
 
 [lib]
 name = "beast_app"

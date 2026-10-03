@@ -1,3 +1,19 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// Copyright (C) 2026 FlexiAtom
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU Affero General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option) any
+// later version.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+// PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License along
+// with this program. If not, see <https://www.gnu.org/licenses/>.
+
 //! 跨语言一致性。两份表都用 hex 字段，不受字典字符（含 `~`）与 TAB 影响：
 //! - `tests/vectors.tsv` 由参考实现 `JavaScript/beast.js` 生成（`node Rust/tests/gen_vectors.js`
 //!   重生成），3359 条，覆盖 ASCII / CJK / 1~3 位码点 / 辅助平面 / 控制字符 / 混排 / 滚动键回绕。

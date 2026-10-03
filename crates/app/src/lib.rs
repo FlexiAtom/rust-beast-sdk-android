@@ -1,3 +1,19 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// Copyright (C) 2026 FlexiAtom
+//
+// This program is free software: you can redistribute it and/or modify it under
+// the terms of the GNU Affero General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option) any
+// later version.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+// PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License along
+// with this program. If not, see <https://www.gnu.org/licenses/>.
+
 use eframe::egui;
 
 pub struct BeastApp {
@@ -137,20 +153,20 @@ impl eframe::App for BeastApp {
 
 fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    let wqy = egui::FontData {
-        font: std::borrow::Cow::Borrowed(include_bytes!("../assets/wqy-zenhei.ttc")),
+    let han = egui::FontData {
+        font: std::borrow::Cow::Borrowed(include_bytes!("../assets/SourceHanSansCN-Regular.otf")),
         index: 0,
         tweak: egui::FontTweak::default(),
     };
-    let wqy = std::sync::Arc::new(wqy);
+    let han = std::sync::Arc::new(han);
     for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
         fonts
             .families
             .entry(family)
             .or_default()
-            .insert(0, "wqy-zenhei".to_owned());
+            .insert(0, "source-han-sans-cn".to_owned());
     }
-    fonts.font_data.insert("wqy-zenhei".to_owned(), wqy);
+    fonts.font_data.insert("source-han-sans-cn".to_owned(), han);
     ctx.set_fonts(fonts);
 }
 
