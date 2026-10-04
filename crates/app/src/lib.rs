@@ -30,7 +30,7 @@ enum MenuPick {
 struct HeldSelection((usize, usize));
 
 pub struct BeastApp {
-    /// 唯一的文本框：人话和兽音在这里互相覆盖
+    /// 唯一的文本框：人话和编码串在这里互相覆盖
     text: String,
     /// 勾选 = 完整串：编码时按当前字典加头尾，解码时**从串自己的头尾提字典**并回填字典框；
     /// 不勾 = 裸正文，两个方向都用字典框里那套
@@ -62,7 +62,7 @@ impl BeastApp {
         Self::default()
     }
 
-    /// 人话 → 兽音：结果覆盖文本框。字典不合法则原样返回 Err，文本框不动。
+    /// 人话 → 编码串：结果覆盖文本框。字典不合法则原样返回 Err，文本框不动。
     fn translate_to_beast(&mut self) -> Result<(), String> {
         let dict = Self::active_dict(&self.dict_input)?;
         self.text = if self.mainstream {
@@ -265,12 +265,12 @@ impl BeastApp {
     /// `eframe::App::update` 需要 `Frame`，测试里构造不出来。
     fn controls(&mut self, ui: &mut egui::Ui, menu_pick: &mut Option<(egui::Id, MenuPick)>) {
         ui.horizontal_wrapped(|ui| {
-            if ui.button("翻译为兽音").clicked() {
+            if ui.button("编码").clicked() {
                 if let Err(e) = self.translate_to_beast() {
                     self.notice = Some(e);
                 }
             }
-            if ui.button("翻译为人话").clicked() {
+            if ui.button("解码").clicked() {
                 if let Err(e) = self.translate_to_human() {
                     self.notice = Some(e);
                 }

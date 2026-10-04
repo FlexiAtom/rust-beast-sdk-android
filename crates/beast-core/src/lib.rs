@@ -35,19 +35,19 @@
 //!   用 [`BeastDict::decode_with_tail`] / [`BeastDict::decode_body_with_tail`] 拿回丢弃计数。
 //!
 //! Rust 的 `char` 存不了孤立代理项，`String::from_utf16_lossy` 会把它们换成 U+FFFD。
-//! 只有残缺/手写的兽语串能解出孤立代理项——Rust 字符串本身不可能编出它们。
+//! 只有残缺/手写的编码串能解出孤立代理项——Rust 字符串本身不可能编出它们。
 
-/// 兽语字典：一个十六进制位 `k`（0..15）编码为 `beast[k / 4]` + `beast[k % 4]`。
+/// 字典表：一个十六进制位 `k`（0..15）编码为 `beast[k / 4]` + `beast[k % 4]`。
 /// 换成自定义字典时须保证 4 个元素互不重复。
 pub const BEAST: [char; 4] = ['嗷', '呜', '啊', '~'];
 
-/// 字典基数：一个兽语字符承载 log2(4) = 2 位，一对承载一个十六进制位
+/// 字典基数：一个字典字符承载 log2(4) = 2 位，一对承载一个十六进制位
 const DICT_BASE: usize = 4;
 
 /// 一个 UTF-16 码元写成定长 4 位十六进制，即 4 个 nibble
 const NIBBLES_PER_UNIT: usize = 4;
 
-/// 一个 nibble 编码为一对兽语字符
+/// 一个 nibble 编码为一对字典字符
 const CHARS_PER_NIBBLE: usize = 2;
 
 /// 主流兽音译者附在正文前的头，即字典序号 `4 + 2 + 1`（[`BEAST`] 的第 4、2、1 个）。
@@ -57,10 +57,10 @@ pub const AFFIX_HEAD: &str = "~呜嗷";
 /// 主流兽音译者附在正文后的尾，即字典序号 `3`（见 [`AFFIX_HEAD`]）
 pub const AFFIX_TAIL: &str = "啊";
 
-/// 一套可替换的兽语字典（4 个互不重复的字符，1 基序号 1..4）。
+/// 一套可替换的字典（4 个互不重复的字符，1 基序号 1..4）。
 ///
 /// 主流格式的头尾**不是固定字符串，而是字典的 1 基序号**：头 = `4 + 2 + 1`、尾 = `3`。
-/// 换字典后头尾必须跟着换，这正是它兼容不同兽音的机制——默认字典下
+/// 换字典后头尾必须跟着换，这正是它换字典之后仍兼容主流的机制——默认字典下
 /// [`BeastDict::head`] == [`AFFIX_HEAD`]、[`BeastDict::tail`] == [`AFFIX_TAIL`]。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BeastDict {
@@ -198,7 +198,7 @@ impl BeastDict {
 
     /// 同 [`decode_body`](Self::decode_body)，但额外返回尾部**被丢弃的字符数**。
     ///
-    /// 一个 UTF-16 码元要 4 个十六进制位 = 8 个兽语字符，末尾不足 8 个的按主流行为静默丢弃，
+    /// 一个 UTF-16 码元要 4 个十六进制位 = 8 个字典字符，末尾不足 8 个的按主流行为静默丢弃，
     /// 所以这个计数只可能是 0、2、4、6（奇数长度走 [`DecodeError::OddLength`]）。解码结果本身
     /// 与 [`decode_body`](Self::decode_body) 逐字符一致，只是把"丢了多少"交给调用方决定要不要提示。
     pub fn decode_body_with_tail(&self, beast_text: &str) -> Result<(String, usize), DecodeError> {
@@ -234,7 +234,7 @@ pub fn encode(text: &str) -> String {
     BeastDict::DEFAULT.encode(text)
 }
 
-/// 人话 → 兽语正文（不带 [`AFFIX_HEAD`] / [`AFFIX_TAIL`]，与 `JavaScript/beast.js` 同码）
+/// 人话 → 裸正文（不带 [`AFFIX_HEAD`] / [`AFFIX_TAIL`]，与 `JavaScript/beast.js` 同码）
 pub fn encode_body(text: &str) -> String {
     BeastDict::DEFAULT.encode_body(text)
 }
@@ -249,7 +249,7 @@ pub fn decode(beast_text: &str) -> Result<String, DecodeError> {
     BeastDict::DEFAULT.decode(beast_text)
 }
 
-/// 兽语正文 → 人话。只吃裸正文；带 [`AFFIX_HEAD`] / [`AFFIX_TAIL`] 的主流完整串交给 [`decode`]。
+/// 裸正文 → 人话。只吃不带头尾的裸正文；带 [`AFFIX_HEAD`] / [`AFFIX_TAIL`] 的主流完整串交给 [`decode`]。
 pub fn decode_body(beast_text: &str) -> Result<String, DecodeError> {
     BeastDict::DEFAULT.decode_body(beast_text)
 }
@@ -315,7 +315,7 @@ fn rem(mut value: isize, modulus: isize) -> isize {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeError {
-    /// 兽语字符数为奇数，无法两两成组
+    /// 编码串长度为奇数，无法两两成组
     OddLength { char_count: usize },
     /// 出现了不在字典中的字符
     UnknownChar(char),
@@ -327,9 +327,9 @@ impl std::fmt::Display for DecodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DecodeError::OddLength { char_count } => {
-                write!(f, "兽语长度为 {char_count}，不是 2 的整数倍")
+                write!(f, "编码串长度为 {char_count}，不是 2 的整数倍")
             }
-            DecodeError::UnknownChar(ch) => write!(f, "字符 {ch:?} 不在兽语字典中"),
+            DecodeError::UnknownChar(ch) => write!(f, "字符 {ch:?} 不在字典中"),
             DecodeError::MissingAffix => write!(
                 f,
                 "头尾缺失或与当前字典不符（头应为该字典的 4+2+1 三字符、尾应为 3 号字符）；\
@@ -453,7 +453,7 @@ mod tests {
         }
     }
 
-    /// 一个辅助平面字符 = 两个码元 = 8 位 = 16 个兽语字（Python 端只有 10 个）
+    /// 一个辅助平面字符 = 两个码元 = 8 位 = 16 个字典字符（Python 端只有 10 个）
     #[test]
     fn astral_uses_surrogate_pairs() {
         assert_eq!(encode("\u{1F600}"), "~呜嗷~呜啊呜呜呜嗷嗷嗷呜嗷~呜啊呜~啊");
