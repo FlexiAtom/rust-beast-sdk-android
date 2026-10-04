@@ -16,8 +16,8 @@
 
 use eframe::egui;
 
-/// 长按菜单里可点的动作。选中范围、复制内容都由 egui 的 TextEdit 自己算，
-/// 这里只是把它的 `Event::Copy` / `Event::Paste` 递进队列，全选写它自己的选区状态。
+/// 长按菜单里可点的动作。选中范围由 egui 的 TextEdit 自己算（复制取那一段字符，
+/// 走我们自己的剪贴板通路），粘贴递 `Event::Paste`，全选写它自己的选区状态。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MenuPick {
     Copy,
@@ -39,8 +39,8 @@ pub struct BeastApp {
     dict_input: String,
     /// 待弹出的「提示」
     notice: Option<String>,
-    /// 长按菜单点出来的动作，攒着**下一帧开头**喂进 egui 事件队列：`Event::Copy/Paste`
-    /// 必须在 TextEdit 被绘制之前进队列，本帧内推会被 `end_pass` 清掉。
+    /// 长按菜单点出来的动作，攒着**下一帧开头**喂进 egui 事件队列（现在只有粘贴）：
+    /// `Event::Paste` 必须在 TextEdit 被绘制之前进队列，本帧内推会被 `end_pass` 清掉。
     pending_events: Vec<egui::Event>,
 }
 
@@ -211,20 +211,38 @@ impl BeastApp {
         }
     }
 
-    /// 复制走 egui 的选区；没有选区时复制整个文本框。粘贴与全选都递给 egui，
-    /// 由它在**下一帧**（`pending_events` 在帧首入队）按自己的规则替换选区或插入光标处。
+    /// 这条「复制」该往系统剪贴板放什么：有选区就那一段，没选区就整个文本框。
+    /// 不能投 `egui::Event::Copy` 让 egui 自己复制——见 `clipboard` 模块头：安卓上
+    /// egui-winit 的剪贴板整段被 cfg 排掉，那份复制只活在本 app 内，粘到别处是空的。
+    fn copy_payload(text: &str, selection: Option<(usize, usize)>) -> String {
+        match selection {
+            Some((from, to)) => text
+                .chars()
+                .skip(from)
+                .take(to.saturating_sub(from))
+                .collect(),
+            None => text.to_owned(),
+        }
+    }
+
+    /// 复制自己走 `clipboard`，粘贴与全选都递给 egui，由它在**下一帧**
+    /// （`pending_events` 在帧首入队）按自己的规则替换选区或插入光标处。
     fn apply_menu(&mut self, ctx: &egui::Context, id: egui::Id, pick: MenuPick) {
         match pick {
-            MenuPick::Copy if Self::selection(ctx, id).is_some() => {
-                self.pending_events.push(egui::Event::Copy)
-            }
             MenuPick::Copy => {
-                if self.text.is_empty() {
+                let selection = Self::selection(ctx, id);
+                let payload = Self::copy_payload(&self.text, selection);
+                if payload.is_empty() {
                     self.notice = Some("文本框是空的，没东西可复制".to_owned());
                 } else {
-                    let chars = self.text.chars().count();
-                    clipboard::copy(&self.text);
-                    self.notice = Some(format!("已复制全部 {chars} 个字"));
+                    let chars = payload.chars().count();
+                    let scope = if selection.is_some() {
+                        "选中"
+                    } else {
+                        "全部"
+                    };
+                    clipboard::copy(&payload);
+                    self.notice = Some(format!("已复制{scope} {chars} 个字"));
                 }
             }
             MenuPick::Paste => match clipboard::paste() {
@@ -525,23 +543,35 @@ mod tests {
         BeastApp::selection(ctx, id)
     }
 
-    /// 有选区时把 egui 自己的 `Event::Copy` 攒进队列，不碰文本、不弹提示
+    /// 有选区时复制的就是那一段，而且走我们自己的剪贴板通路——不能投 `Event::Copy`
     #[test]
-    fn copy_with_selection_queues_eguis_own_copy_event() {
+    fn copy_with_selection_sends_just_that_slice() {
         let ctx = egui::Context::default();
         let id = egui::Id::new("box");
         let mut app = BeastApp {
             text: "呜啊呜嗷".into(),
             ..Default::default()
         };
-        select(&ctx, id, 0, 2);
+        select(&ctx, id, 1, 3);
         app.apply_menu(&ctx, id, MenuPick::Copy);
         assert!(
-            matches!(app.pending_events.as_slice(), [egui::Event::Copy]),
-            "{:?}",
-            app.pending_events
+            app.pending_events.is_empty(),
+            "复制不该再走 egui 的 Event::Copy：安卓上它到不了系统剪贴板"
         );
-        assert!(app.notice.is_none());
+        let notice = app.notice.expect("复制选中也该给出字数");
+        assert!(notice.contains("选中") && notice.contains('2'), "{notice}");
+    }
+
+    /// 选区是字符下标不是字节下标；旧选区越界也不能 panic
+    #[test]
+    fn copy_payload_slices_by_chars_not_bytes() {
+        assert_eq!(BeastApp::copy_payload("呜啊呜嗷", Some((1, 3))), "啊呜");
+        assert_eq!(BeastApp::copy_payload("呜啊呜嗷", None), "呜啊呜嗷");
+        assert_eq!(
+            BeastApp::copy_payload("呜啊", Some((5, 9))),
+            "",
+            "文本变短后的旧选区该切成空，而不是崩"
+        );
     }
 
     /// 没选区就复制整框——这是"复制文本里的内容"那条要求，不依赖手指能不能拖出选区
@@ -581,12 +611,12 @@ mod tests {
         app.apply_menu(&ctx, id, MenuPick::SelectAll);
         assert_eq!(selected_range(&ctx, id), Some((0, 4)));
         app.apply_menu(&ctx, id, MenuPick::Copy);
+        let notice = app.notice.expect("全选后复制也该给出字数");
         assert!(
-            matches!(app.pending_events.as_slice(), [egui::Event::Copy]),
-            "{:?}",
-            app.pending_events
+            notice.contains("选中") && notice.contains('4'),
+            "全选后该走选区那条路：{notice}"
         );
-        assert!(app.notice.is_none(), "全选后不该掉进\"已复制全部\"兜底");
+        assert!(app.pending_events.is_empty());
     }
 
     /// 粘贴不能静默：要么把 Event::Paste 攒进队列，要么说明取不到
@@ -804,12 +834,12 @@ mod tests {
             ..Default::default()
         };
         app.apply_menu(&ctx, id, MenuPick::Copy);
+        let notice = app.notice.expect("补回来的选区该给出字数");
         assert!(
-            matches!(app.pending_events.as_slice(), [egui::Event::Copy]),
-            "补回来的选区要让复制走 Event::Copy：{:?}",
-            app.pending_events
+            notice.contains("选中") && notice.contains('2'),
+            "补回来的选区该走选区那条路，不是整框兜底：{notice}"
         );
-        assert!(app.notice.is_none(), "不该掉进\"已复制全部\"兜底");
+        assert!(app.pending_events.is_empty());
     }
 
     /// 抬手后点一下别处（选区被用户自己取消）时，记账必须跟着清掉，
