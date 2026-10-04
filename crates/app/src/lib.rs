@@ -195,6 +195,34 @@ impl BeastApp {
         }
         ctx.request_repaint();
     }
+
+    /// 控件排：两个按钮 + 字典框 + 主流兼容，全挤在同一行里，窄屏放不下时
+    /// `horizontal_wrapped` 让它自己折到第二行——底栏随之长高，不会像原先那样
+    /// 把最后一行留在屏幕圆角底下。抽成方法是为了让测试能量到真控件：
+    /// `eframe::App::update` 需要 `Frame`，测试里构造不出来。
+    fn controls(&mut self, ui: &mut egui::Ui, menu_pick: &mut Option<(egui::Id, MenuPick)>) {
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("翻译为兽音").clicked() {
+                if let Err(e) = self.translate_to_beast() {
+                    self.notice = Some(e);
+                }
+            }
+            if ui.button("翻译为人话").clicked() {
+                if let Err(e) = self.translate_to_human() {
+                    self.notice = Some(e);
+                }
+            }
+            ui.label("字典");
+            let dict_edit = ui.add(
+                egui::TextEdit::singleline(&mut self.dict_input)
+                    .desired_width(56.0)
+                    .hint_text("嗷呜啊~"),
+            );
+            Self::kick_keyboard(&dict_edit);
+            Self::text_menu(&dict_edit, menu_pick);
+            ui.checkbox(&mut self.mainstream, "主流兼容");
+        });
+    }
 }
 
 impl eframe::App for BeastApp {
@@ -206,30 +234,8 @@ impl eframe::App for BeastApp {
             ctx.input_mut(|i| i.events.extend(queued));
         }
         let mut menu_pick: Option<(egui::Id, MenuPick)> = None;
-        // 控件挤在同一行里：两个按钮 + 字典框 + 主流兼容。窄一行放不下时
-        // `horizontal_wrapped` 会自己折到第二行，不会像原先那样被屏幕圆角切掉最后一行。
         egui::TopBottomPanel::bottom("controls").show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("翻译为兽音").clicked() {
-                    if let Err(e) = self.translate_to_beast() {
-                        self.notice = Some(e);
-                    }
-                }
-                if ui.button("翻译为人话").clicked() {
-                    if let Err(e) = self.translate_to_human() {
-                        self.notice = Some(e);
-                    }
-                }
-                ui.label("字典");
-                let dict_edit = ui.add(
-                    egui::TextEdit::singleline(&mut self.dict_input)
-                        .desired_width(56.0)
-                        .hint_text("嗷呜啊~"),
-                );
-                Self::kick_keyboard(&dict_edit);
-                Self::text_menu(&dict_edit, &mut menu_pick);
-                ui.checkbox(&mut self.mainstream, "主流兼容");
-            });
+            self.controls(ui, &mut menu_pick);
             // 全屏 SurfaceView 会画到导航栏底下，不留这段就被屏幕底边和圆角切掉
             #[cfg(target_os = "android")]
             ui.add_space(android::bottom_inset_px() as f32 / ui.ctx().pixels_per_point());
@@ -566,5 +572,71 @@ mod tests {
                 assert!(!text.is_empty(), "空剪贴板不该发 Paste 事件");
             }
         }
+    }
+
+    /// 按给定宽度跑两帧取稳态，返回底栏那一块的落位。
+    /// 两帧是必需的：egui 的面板按上一帧的落位预留空间，第一帧的尺寸还是旧值。
+    fn settled_controls_rect(ctx: &egui::Context, app: &mut BeastApp, width: f32) -> egui::Rect {
+        let mut rect = egui::Rect::NOTHING;
+        for frame in 0..2 {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 600.0),
+                    )),
+                    time: Some(1.0 + frame as f64 / 10.0),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::TopBottomPanel::bottom("controls").show(ctx, |ui| {
+                        let mut pick = None;
+                        app.controls(ui, &mut pick);
+                        rect = ui.max_rect();
+                    });
+                    egui::CentralPanel::default().show(ctx, |_| {});
+                },
+            );
+        }
+        rect
+    }
+
+    /// 控件排的适配假设：手机宽度放得下一行；放不下时底栏靠**长高**折行，
+    /// 而不是把多出来的一截裁掉。`update()` 本身测不了（`eframe::Frame` 构造不出来），
+    /// 这里量的是同一个 `controls()`。
+    #[test]
+    fn phone_width_keeps_one_row_and_tiny_width_grows_the_panel_upwards() {
+        let ctx = egui::Context::default();
+        let mut app = BeastApp::default();
+        let roomy = settled_controls_rect(&ctx, &mut app, 2000.0);
+        let phone = settled_controls_rect(&ctx, &mut app, 360.0);
+        let tiny = settled_controls_rect(&ctx, &mut app, 120.0);
+
+        assert!(
+            (phone.height() - roomy.height()).abs() < 1.0,
+            "360 宽就该是一行，别到了手机上才折：roomy={:?} phone={:?}",
+            roomy,
+            phone
+        );
+        assert!(
+            tiny.height() > roomy.height() * 1.5,
+            "120 宽放不下却没长高，说明它按裁剪处理：roomy={:?} tiny={:?}",
+            roomy,
+            tiny
+        );
+        // 长高必须是往上顶（底栏的底边由屏幕决定，动不了）。底边若跟着往下跑，
+        // 就等于把多出来的一行推给了屏幕底边和圆角去切。
+        assert!(
+            (tiny.bottom() - phone.bottom()).abs() < 1.0,
+            "底边不该移动：phone={:?} tiny={:?}",
+            phone,
+            tiny
+        );
+        assert!(
+            tiny.min.y < phone.min.y - 1.0,
+            "多出来的一行应当往屏幕中间长：phone={:?} tiny={:?}",
+            phone,
+            tiny
+        );
     }
 }
