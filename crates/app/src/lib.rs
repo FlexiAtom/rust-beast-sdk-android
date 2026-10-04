@@ -25,6 +25,10 @@ enum MenuPick {
     SelectAll,
 }
 
+/// 存在 `ctx.data` 里的那一格：手指压在屏上之前还在的非空选区，按 widget id 存。
+#[derive(Clone, Copy)]
+struct HeldSelection((usize, usize));
+
 pub struct BeastApp {
     /// 唯一的文本框：人话和兽音在这里互相覆盖
     text: String,
@@ -135,9 +139,16 @@ impl BeastApp {
     fn kick_keyboard(_response: &egui::Response) {}
 
     /// 长按（egui 把触屏长按转成 secondary click）弹它自带的 `context_menu`。
+    ///
+    /// 每帧在这里做一次选区记账：egui 在**按下那一帧**就把选区收成光标了
+    /// （`text_cursor_state.rs` 里 `hovered() && any_pressed()` 那个分支），
+    /// 而长按要等 `max_click_duration` 之后才出菜单，等到菜单时选区早没了——
+    /// 所以"复制选中"必须靠这里记下的、手指还压在屏上之前那一份。
     fn text_menu(response: &egui::Response, out: &mut Option<(egui::Id, MenuPick)>) {
         let id = response.id;
-        response.context_menu(|ui| {
+        Self::remember_selection(&response.ctx, id);
+        response.context_menu(move |ui| {
+            Self::restore_selection(ui.ctx(), id);
             if ui.button("复制").clicked() {
                 *out = Some((id, MenuPick::Copy));
                 ui.close_menu();
@@ -153,17 +164,60 @@ impl BeastApp {
         });
     }
 
+    /// 非空选区的两端字符下标；光标（两端重合）按"没有选区"算。
+    fn selection(ctx: &egui::Context, id: egui::Id) -> Option<(usize, usize)> {
+        let range = egui::text_edit::TextEditState::load(ctx, id)?
+            .cursor
+            .char_range()?;
+        let ends = range.sorted();
+        (ends[0].index != ends[1].index).then_some((ends[0].index, ends[1].index))
+    }
+
+    /// 写 egui 自己那份选区状态，跟手指拖选后落的是同一个格子。
+    /// 状态还没被 TextEdit 建出来时按默认值补一份：下一帧 TextEdit 会拿自己的
+    /// galley 把区间钳回实际长度，不会越界。
+    fn set_selection(ctx: &egui::Context, id: egui::Id, from: usize, to: usize) {
+        let mut state = egui::text_edit::TextEditState::load(ctx, id).unwrap_or_default();
+        state
+            .cursor
+            .set_char_range(Some(egui::text_selection::CCursorRange::two(
+                egui::epaint::text::cursor::CCursor::new(from),
+                egui::epaint::text::cursor::CCursor::new(to),
+            )));
+        state.store(ctx, id);
+    }
+
+    /// 手指不在屏上的那些帧，把当前选区存进 `ctx.data`；在屏上的帧跳过——
+    /// 按下那一帧正是 egui 吃掉选区的那一帧，抬手那一帧存的才是拖选的最终结果。
+    fn remember_selection(ctx: &egui::Context, id: egui::Id) {
+        if ctx.input(|i| i.pointer.any_down()) {
+            return;
+        }
+        // 先在外头读走：`TextEditState::load` 也要拿 data，写锁里再开读锁会自锁
+        let selection = Self::selection(ctx, id);
+        ctx.data_mut(|data| match selection {
+            Some(range) => data.insert_temp(id, HeldSelection(range)),
+            None => data.remove::<HeldSelection>(id),
+        });
+    }
+
+    /// 菜单打开的每一帧调用：选区还在就什么都不做，被按下那一下吃了就补回去
+    /// （补回来用户看得见高亮，也知道这条"复制"要复制的是哪一段）。
+    fn restore_selection(ctx: &egui::Context, id: egui::Id) {
+        let held = ctx.data(|data| data.get_temp::<HeldSelection>(id));
+        if let Some(HeldSelection((from, to))) = held.filter(|_| Self::selection(ctx, id).is_none())
+        {
+            Self::set_selection(ctx, id, from, to);
+        }
+    }
+
     /// 复制走 egui 的选区；没有选区时复制整个文本框。粘贴与全选都递给 egui，
     /// 由它在**下一帧**（`pending_events` 在帧首入队）按自己的规则替换选区或插入光标处。
     fn apply_menu(&mut self, ctx: &egui::Context, id: egui::Id, pick: MenuPick) {
-        let selected = egui::text_edit::TextEditState::load(ctx, id)
-            .and_then(|state| state.cursor.char_range())
-            .is_some_and(|range| {
-                let ends = range.sorted();
-                ends[0].index != ends[1].index
-            });
         match pick {
-            MenuPick::Copy if selected => self.pending_events.push(egui::Event::Copy),
+            MenuPick::Copy if Self::selection(ctx, id).is_some() => {
+                self.pending_events.push(egui::Event::Copy)
+            }
             MenuPick::Copy => {
                 if self.text.is_empty() {
                     self.notice = Some("文本框是空的，没东西可复制".to_owned());
@@ -180,17 +234,8 @@ impl BeastApp {
             MenuPick::SelectAll => {
                 // egui 0.31 没有 `Event::SelectAll`，但它把选区存在公开的 `TextEditState` 里，
                 // 写整段区间就是它自己的全选（高亮、之后的复制/粘贴都按这个选区走）。
-                // 状态还没被 TextEdit 建出来时按默认值补一份：下一帧 TextEdit 会拿自己的
-                // galley 把区间钳回实际长度，不会越界。
                 let len = self.text.chars().count();
-                let mut state = egui::text_edit::TextEditState::load(ctx, id).unwrap_or_default();
-                state
-                    .cursor
-                    .set_char_range(Some(egui::text_selection::CCursorRange::two(
-                        egui::epaint::text::cursor::CCursor::new(0),
-                        egui::epaint::text::cursor::CCursor::new(len),
-                    )));
-                state.store(ctx, id);
+                Self::set_selection(ctx, id, 0, len);
             }
         }
         ctx.request_repaint();
@@ -471,25 +516,13 @@ mod tests {
         assert_eq!(app.text, incoming, "解出来再编回去应当逐字符相同");
     }
 
-    /// 直接写 egui 自己那份选区状态，跟手指拖选后落的是同一个格子
+    /// 读写选区一律转调实现里那两个函数，测试不再自己抄一份
     fn select(ctx: &egui::Context, id: egui::Id, from: usize, to: usize) {
-        let mut state = egui::text_edit::TextEditState::load(ctx, id).unwrap_or_default();
-        state
-            .cursor
-            .set_char_range(Some(egui::text_selection::CCursorRange::two(
-                egui::epaint::text::cursor::CCursor::new(from),
-                egui::epaint::text::cursor::CCursor::new(to),
-            )));
-        state.store(ctx, id);
+        BeastApp::set_selection(ctx, id, from, to);
     }
 
     fn selected_range(ctx: &egui::Context, id: egui::Id) -> Option<(usize, usize)> {
-        egui::text_edit::TextEditState::load(ctx, id)
-            .and_then(|state| state.cursor.char_range())
-            .map(|range| {
-                let ends = range.sorted();
-                (ends[0].index, ends[1].index)
-            })
+        BeastApp::selection(ctx, id)
     }
 
     /// 有选区时把 egui 自己的 `Event::Copy` 攒进队列，不碰文本、不弹提示
@@ -638,5 +671,235 @@ mod tests {
             phone,
             tiny
         );
+    }
+
+    /// 一帧里 egui 的实际状态：认没认出长按、菜单开没开、选区和记账还剩什么。
+    #[derive(Default)]
+    struct Frame {
+        id: Option<egui::Id>,
+        long_touched: bool,
+        menu_open: bool,
+        selection: Option<(usize, usize)>,
+        held: Option<(usize, usize)>,
+    }
+
+    /// 跑一帧：画出主文本框并走一遍 `text_menu` 的记账，把这一帧的状态带回来。
+    /// 只画这一个控件，所以 id 每帧都相同（第一帧拿它，后面几帧再用）。
+    /// 选区、记账、菜单都读在 `text_menu` **之后**——闭包里补回来的那一份才算数。
+    fn frame_text_edit(
+        ctx: &egui::Context,
+        text: &mut String,
+        events: Vec<egui::Event>,
+        pointer_pos: Option<egui::Pos2>,
+        time: f64,
+    ) -> Frame {
+        let mut frame = Frame::default();
+        // 先报一次手指在哪，再报按下/抬起——`Response::hovered()` 要的是这一帧的指针位置
+        let mut all = Vec::new();
+        if let Some(pos) = pointer_pos {
+            all.push(egui::Event::PointerMoved(pos));
+        }
+        all.extend(events);
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(360.0, 600.0),
+                )),
+                time: Some(time),
+                events: all,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let response = ui.add(
+                        egui::TextEdit::multiline(text)
+                            .desired_width(f32::INFINITY)
+                            .min_size(ui.available_size()),
+                    );
+                    let id = response.id;
+                    frame.id = Some(id);
+                    frame.long_touched = response.long_touched();
+                    let mut pick = None;
+                    BeastApp::text_menu(&response, &mut pick);
+                    frame.menu_open = response.context_menu_opened();
+                    frame.selection = BeastApp::selection(ctx, id);
+                    frame.held = ctx
+                        .data(|data| data.get_temp::<HeldSelection>(id))
+                        .map(|held| held.0);
+                });
+            },
+        );
+        frame
+    }
+
+    /// 手指按在文本框中间，等价于触屏长按的那一下按下
+    const PRESS: egui::Pos2 = egui::Pos2::new(80.0, 80.0);
+
+    fn press_event(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        }
+    }
+
+    /// 选区 + 一帧按下：egui 当场把选区收成光标（这就是人工报的那个 bug），
+    /// 但记账要活下来——菜单靠它才有东西可复制。
+    #[test]
+    fn the_press_eats_the_selection_but_the_bookkeeping_survives() {
+        let ctx = egui::Context::default();
+        let mut text = "呜啊呜嗷".to_owned();
+        let id = frame_text_edit(&ctx, &mut text, vec![], None, 1.0)
+            .id
+            .unwrap();
+        select(&ctx, id, 0, 2);
+        frame_text_edit(&ctx, &mut text, vec![], None, 2.0);
+        assert_eq!(selected_range(&ctx, id), Some((0, 2)), "抬手帧之后选区还在");
+        assert_eq!(held_selection(&ctx, id), Some((0, 2)));
+
+        let frame = frame_text_edit(
+            &ctx,
+            &mut text,
+            vec![press_event(PRESS, true)],
+            Some(PRESS),
+            3.0,
+        );
+        assert_eq!(
+            frame.selection, None,
+            "按下这一帧 egui 该把选区收成光标——它不收成这样就没有这个 bug 了"
+        );
+        assert_eq!(frame.held, Some((0, 2)), "记账不能被这一帧冲掉");
+    }
+
+    /// 菜单打开的那一帧把选区补回来，之后"复制"走的才是选区那条路（不是整框兜底）。
+    #[test]
+    fn the_menu_puts_the_selection_back_so_copy_uses_it() {
+        let ctx = egui::Context::default();
+        let mut text = "呜啊呜嗷".to_owned();
+        let id = frame_text_edit(&ctx, &mut text, vec![], None, 1.0)
+            .id
+            .unwrap();
+        select(&ctx, id, 1, 3);
+        frame_text_edit(&ctx, &mut text, vec![], None, 2.0);
+        frame_text_edit(
+            &ctx,
+            &mut text,
+            vec![press_event(PRESS, true)],
+            Some(PRESS),
+            3.0,
+        );
+        assert_eq!(selected_range(&ctx, id), None);
+
+        BeastApp::restore_selection(&ctx, id);
+        assert_eq!(
+            selected_range(&ctx, id),
+            Some((1, 3)),
+            "菜单里该重新看到高亮"
+        );
+
+        let mut app = BeastApp {
+            text: text.clone(),
+            ..Default::default()
+        };
+        app.apply_menu(&ctx, id, MenuPick::Copy);
+        assert!(
+            matches!(app.pending_events.as_slice(), [egui::Event::Copy]),
+            "补回来的选区要让复制走 Event::Copy：{:?}",
+            app.pending_events
+        );
+        assert!(app.notice.is_none(), "不该掉进\"已复制全部\"兜底");
+    }
+
+    /// 抬手后点一下别处（选区被用户自己取消）时，记账必须跟着清掉，
+    /// 否则下一次长按会复制一段早就不算数的旧选区。
+    #[test]
+    fn a_tap_that_drops_the_selection_also_drops_the_bookkeeping() {
+        let ctx = egui::Context::default();
+        let mut text = "呜啊呜嗷".to_owned();
+        let id = frame_text_edit(&ctx, &mut text, vec![], None, 1.0)
+            .id
+            .unwrap();
+        select(&ctx, id, 0, 2);
+        frame_text_edit(&ctx, &mut text, vec![], None, 2.0);
+        assert_eq!(held_selection(&ctx, id), Some((0, 2)));
+
+        // 按下 → 抬手，等价于一次单击：egui 把光标落到点处，选区没了
+        frame_text_edit(
+            &ctx,
+            &mut text,
+            vec![press_event(PRESS, true)],
+            Some(PRESS),
+            3.0,
+        );
+        frame_text_edit(
+            &ctx,
+            &mut text,
+            vec![press_event(PRESS, false)],
+            Some(PRESS),
+            4.0,
+        );
+        assert_eq!(selected_range(&ctx, id), None);
+        assert_eq!(
+            held_selection(&ctx, id),
+            None,
+            "用户自己取消的选区不该被记着，下次长按不能拿它复制"
+        );
+    }
+
+    fn held_selection(ctx: &egui::Context, id: egui::Id) -> Option<(usize, usize)> {
+        ctx.data(|data| data.get_temp::<HeldSelection>(id))
+            .map(|held| held.0)
+    }
+
+    /// 触屏的那一下按下：GameActivity 会同时给 `Touch` 和 `PointerButton`，
+    /// egui 的 `is_long_touch()` 要的是前者（`any_touches()` 只由 `Event::Touch` 喂）。
+    fn touch_start(pos: egui::Pos2) -> egui::Event {
+        egui::Event::Touch {
+            device_id: egui::TouchDeviceId(0),
+            id: egui::TouchId(0),
+            phase: egui::TouchPhase::Start,
+            pos,
+            force: None,
+        }
+    }
+
+    /// 真按 egui 的长按通路走一遍：选区先被按下吃掉 → 手指不落下去、保持超过
+    /// `max_click_duration` → egui 自己把它翻成 secondary click → 菜单打开。
+    /// 补选区只写在 `context_menu` 的闭包里，所以"菜单开着 + 选区回来了"
+    /// 就等于那段闭包真的跑过——不用去够 egui 私有的菜单状态。
+    #[test]
+    fn a_real_long_press_opens_the_menu_with_the_selection_back() {
+        let ctx = egui::Context::default();
+        let mut text = "呜啊呜嗷".to_owned();
+        let id = frame_text_edit(&ctx, &mut text, vec![], None, 1.0)
+            .id
+            .unwrap();
+        select(&ctx, id, 1, 3);
+        frame_text_edit(&ctx, &mut text, vec![], None, 2.0);
+
+        let frame = frame_text_edit(
+            &ctx,
+            &mut text,
+            vec![press_event(PRESS, true)],
+            Some(PRESS),
+            3.0,
+        );
+        assert_eq!(frame.selection, None, "按下这一帧选区被 egui 收成光标");
+        assert_eq!(frame.held, Some((1, 3)), "手指还压着，记账该留着");
+
+        // 手指没动也没抬，只是过了一秒，并且这一下是触屏
+        let frame = frame_text_edit(&ctx, &mut text, vec![touch_start(PRESS)], Some(PRESS), 4.0);
+        assert!(frame.long_touched, "egui 该把这一帧认成触屏长按");
+        assert_eq!(
+            frame.selection,
+            Some((1, 3)),
+            "菜单没开、或开了却没把选区补回来"
+        );
+
+        let frame = frame_text_edit(&ctx, &mut text, vec![], Some(PRESS), 5.0);
+        assert!(frame.menu_open, "长按之后菜单该开着");
+        assert_eq!(frame.selection, Some((1, 3)), "菜单开着的每一帧选区都还在");
     }
 }
