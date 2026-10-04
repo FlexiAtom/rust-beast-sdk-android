@@ -206,22 +206,10 @@ impl eframe::App for BeastApp {
             ctx.input_mut(|i| i.events.extend(queued));
         }
         let mut menu_pick: Option<(egui::Id, MenuPick)> = None;
-        egui::CentralPanel::default().show(ctx, |ui| {
-            #[cfg(target_os = "android")]
-            ui.add_space(android::top_inset_px() as f32 / ui.ctx().pixels_per_point());
-            // 第 1 行文本框，第 2~4 行是按键 / 字典 / 主流兼容，高度按行高预留
-            let row = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
-            let text_edit = ui.add(
-                egui::TextEdit::multiline(&mut self.text)
-                    .desired_width(f32::INFINITY)
-                    .min_size(egui::vec2(
-                        ui.available_width(),
-                        (ui.available_height() - 3.0 * row).max(80.0),
-                    )),
-            );
-            Self::kick_keyboard(&text_edit);
-            Self::text_menu(&text_edit, &mut menu_pick);
-            ui.horizontal(|ui| {
+        // 控件挤在同一行里：两个按钮 + 字典框 + 主流兼容。窄一行放不下时
+        // `horizontal_wrapped` 会自己折到第二行，不会像原先那样被屏幕圆角切掉最后一行。
+        egui::TopBottomPanel::bottom("controls").show(ctx, |ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui.button("翻译为兽音").clicked() {
                     if let Err(e) = self.translate_to_beast() {
                         self.notice = Some(e);
@@ -232,18 +220,32 @@ impl eframe::App for BeastApp {
                         self.notice = Some(e);
                     }
                 }
-            });
-            ui.horizontal(|ui| {
                 ui.label("字典");
                 let dict_edit = ui.add(
                     egui::TextEdit::singleline(&mut self.dict_input)
-                        .desired_width(120.0)
+                        .desired_width(56.0)
                         .hint_text("嗷呜啊~"),
                 );
                 Self::kick_keyboard(&dict_edit);
                 Self::text_menu(&dict_edit, &mut menu_pick);
+                ui.checkbox(&mut self.mainstream, "主流兼容");
             });
-            ui.checkbox(&mut self.mainstream, "主流兼容");
+            // 全屏 SurfaceView 会画到导航栏底下，不留这段就被屏幕底边和圆角切掉
+            #[cfg(target_os = "android")]
+            ui.add_space(android::bottom_inset_px() as f32 / ui.ctx().pixels_per_point());
+        });
+        egui::CentralPanel::default().show(ctx, |ui| {
+            #[cfg(target_os = "android")]
+            ui.add_space(android::top_inset_px() as f32 / ui.ctx().pixels_per_point());
+            // 文本框吃满剩下的整块高度，不再按"预留几行"估——控件行折不折都影响不到它。
+            let size = ui.available_size();
+            let text_edit = ui.add(
+                egui::TextEdit::multiline(&mut self.text)
+                    .desired_width(f32::INFINITY)
+                    .min_size(size),
+            );
+            Self::kick_keyboard(&text_edit);
+            Self::text_menu(&text_edit, &mut menu_pick);
         });
         if let Some((id, pick)) = menu_pick.take() {
             self.apply_menu(ctx, id, pick);

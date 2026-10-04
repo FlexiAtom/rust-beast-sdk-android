@@ -27,10 +27,12 @@ use winit::platform::android::activity::AndroidApp;
 
 static APP: OnceLock<AndroidApp> = OnceLock::new();
 
-/// 状态栏高度（物理像素）。GameActivity 的 SurfaceView 铺满整屏，
-/// egui 的内容从 y=0 画起会被状态栏压住，所以首行要空出这段。
+/// 状态栏与导航栏高度（物理像素）。GameActivity 的 SurfaceView 铺满整屏，
+/// egui 的内容从 y=0 画起会被状态栏压住，底部那行控件又会被导航栏与屏幕圆角切掉，
+/// 所以首行要空出上面那段、末行要空出下面那段。
 /// 0 = 还没查到或查不到，先按 0 画，下一帧补正。
 static TOP_INSET_PX: AtomicI32 = AtomicI32::new(0);
+static BOTTOM_INSET_PX: AtomicI32 = AtomicI32::new(0);
 
 /// 在 `android_main` 里绑定一次；重复调用取第一次的。
 pub fn bind(app: &AndroidApp) {
@@ -40,14 +42,23 @@ pub fn bind(app: &AndroidApp) {
         Ok(px) => TOP_INSET_PX.store(px, Ordering::Relaxed),
         Err(e) => log::warn!("状态栏高度查不到，顶部留白按 0 处理: {e}"),
     }));
+    let worker = app.clone();
+    app.run_on_java_main_thread(Box::new(move || match nav_bar_px(&worker) {
+        Ok(px) => BOTTOM_INSET_PX.store(px, Ordering::Relaxed),
+        Err(e) => log::warn!("导航栏高度查不到，底部留白按 0 处理: {e}"),
+    }));
 }
 
 pub fn top_inset_px() -> i32 {
     TOP_INSET_PX.load(Ordering::Relaxed)
 }
 
-/// 平台自己的 `android:dimen/status_bar_height`，不走资源合并，apk 里没有这个资源也能读到。
-fn status_bar_px(app: &AndroidApp) -> Result<i32, Box<dyn std::error::Error>> {
+pub fn bottom_inset_px() -> i32 {
+    BOTTOM_INSET_PX.load(Ordering::Relaxed)
+}
+
+/// 平台自己的 `android:dimen/<name>`，不走资源合并，apk 里没有这个资源也能读到。
+fn system_dimen_px(app: &AndroidApp, name: &str) -> Result<i32, Box<dyn std::error::Error>> {
     let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr() as *mut jni::sys::JavaVM) };
     // 闭包的错误类型要写死：`From<jni::Error>` 有多个候选实现，外面又是 map_err 推不出来
     vm.attach_current_thread(|env| -> jni::errors::Result<i32> {
@@ -61,7 +72,7 @@ fn status_bar_px(app: &AndroidApp) -> Result<i32, Box<dyn std::error::Error>> {
                 &[],
             )?
             .l()?;
-        let name: JObject = env.new_string("status_bar_height")?.into();
+        let name: JObject = env.new_string(name)?.into();
         let kind: JObject = env.new_string("dimen")?.into();
         let pkg: JObject = env.new_string("android")?.into();
         let id = env
@@ -90,6 +101,15 @@ fn status_bar_px(app: &AndroidApp) -> Result<i32, Box<dyn std::error::Error>> {
         Ok(px)
     })
     .map_err(Into::into)
+}
+
+fn status_bar_px(app: &AndroidApp) -> Result<i32, Box<dyn std::error::Error>> {
+    system_dimen_px(app, "status_bar_height")
+}
+
+/// 导航栏（三键或手势条）高度。全屏 SurfaceView 会画到它底下，底部控件因此被切。
+fn nav_bar_px(app: &AndroidApp) -> Result<i32, Box<dyn std::error::Error>> {
+    system_dimen_px(app, "navigation_bar_height")
 }
 
 /// winit 0.30 的安卓后端不匹配 `InputEvent::TextEvent`，输入法提交的文本到不了 egui。
