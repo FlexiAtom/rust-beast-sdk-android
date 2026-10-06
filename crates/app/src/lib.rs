@@ -225,6 +225,19 @@ impl BeastApp {
         }
     }
 
+    /// 把剪贴板内容递给 egui，让它下一帧按自己的规则替换选区或插到光标处。
+    ///
+    /// 先把焦点还回这个文本框：点「粘贴」那一下按在菜单上，egui 在 `Context::interact`
+    /// 里对每个 widget 做 `pointer_pressed_elsewhere && has_focus(id) → surrender_focus`，
+    /// 于是文本框在这一帧就丢了焦点；而 `Event::Paste` 只有**持焦点的那个 TextEdit**
+    /// 才会读（`text_edit/builder.rs`：`interactive && memory.has_focus(id)` 才调 `events()`）。
+    /// 不补这一步，事件会在帧末 `InputState::end_pass` 的 `events.clear()` 里静默消失——
+    /// 就是「点了粘贴什么都没发生」。
+    fn queue_paste(&mut self, ctx: &egui::Context, id: egui::Id, text: String) {
+        ctx.memory_mut(|mem| mem.request_focus(id));
+        self.pending_events.push(egui::Event::Paste(text));
+    }
+
     /// 复制自己走 `clipboard`，粘贴与全选都递给 egui，由它在**下一帧**
     /// （`pending_events` 在帧首入队）按自己的规则替换选区或插入光标处。
     fn apply_menu(&mut self, ctx: &egui::Context, id: egui::Id, pick: MenuPick) {
@@ -246,7 +259,7 @@ impl BeastApp {
                 }
             }
             MenuPick::Paste => match clipboard::paste() {
-                Some(text) => self.pending_events.push(egui::Event::Paste(text)),
+                Some(text) => self.queue_paste(ctx, id, text),
                 None => self.notice = Some("系统剪贴板是空的（或取不到）".to_owned()),
             },
             MenuPick::SelectAll => {
@@ -635,6 +648,58 @@ mod tests {
                 assert!(!text.is_empty(), "空剪贴板不该发 Paste 事件");
             }
         }
+    }
+
+    /// 长按「粘贴」点下去没反应的成因，用真 egui 量出来：同一个 `Event::Paste`，
+    /// 焦点不在文本框时它被静默吞掉（帧末 `events.clear()`），文本一个字不动；
+    /// 走 `queue_paste`（先把焦点要回来）后同样的事件才真把选区替换成剪贴板内容。
+    #[test]
+    fn paste_only_lands_when_the_box_holds_focus() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("box");
+        let draw = |app: &mut BeastApp, events: Vec<egui::Event>| {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(360.0, 600.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut app.text)
+                                .id(id)
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
+                },
+            );
+        };
+
+        let mut app = BeastApp {
+            text: "呜啊".into(),
+            ..Default::default()
+        };
+        draw(&mut app, vec![]); // 第一帧把 rect 与 TextEditState 建出来
+        select(&ctx, id, 0, 2);
+
+        draw(&mut app, vec![egui::Event::Paste("嗷".into())]);
+        assert_eq!(
+            app.text, "呜啊",
+            "没焦点时 Paste 该被吞掉——这就是长按粘贴粘不上的原因"
+        );
+
+        app.queue_paste(&ctx, id, "嗷".to_owned());
+        assert!(
+            ctx.memory(|mem| mem.has_focus(id)),
+            "粘贴前该把焦点还给文本框"
+        );
+        let queued = std::mem::take(&mut app.pending_events);
+        draw(&mut app, queued);
+        assert_eq!(app.text, "嗷", "选区该被剪贴板内容整段替换");
     }
 
     /// 按给定宽度跑两帧取稳态，返回底栏那一块的落位。
